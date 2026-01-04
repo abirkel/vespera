@@ -1,0 +1,10 @@
+{
+    "window.titleBarStyle": "custom",
+    "editor.fontFamily": "'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'monospace', 'Symbols Nerd Font Mono'",
+    "editor.fontLigatures": true,
+    "editor.fontSize": 13,
+    "update.mode": "none",
+    "terminal.integrated.defaultProfile.linux": "fish",
+    "remote.containers.dockerPath": "/usr/bin/podman",
+    "dev.containers.dockerPath": "/usr/bin/podman"
+}
