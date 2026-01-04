@@ -4,57 +4,69 @@
 
 Custom Bazzite-nvidia with Podman-focused developer tools.
 
-## Features
+## What We Changed
 
-### Base
-- **Bazzite-nvidia** - Full gaming stack with NVIDIA drivers
-- **KDE Plasma** - Desktop environment
-- **Konsole** - Default terminal (not Ptyxis)
+### Packages Added
+- **Containers**: podman-compose, podman-machine, podman-bootc, podman-tui
+- **Virtualization**: qemu-kvm, libvirt, virt-manager, virt-viewer, virt-v2v, kcli, edk2-ovmf
+- **QEMU enhancements**: VirtIO GPU/VGA, SPICE, USB redirection
+- **Development**: VSCode, flatpak-builder, git-credential-libsecret
+- **Shells**: fish, zsh, tmux
+- **Networking**: wireguard-tools, samba (winbind stack)
+- **iOS support**: ifuse, libimobiledevice, usbmuxd, ideviceinstaller
+- **System tools**: htop, powerstat, powertop, rclone, p7zip, wl-clipboard
+- **Cockpit modules**: machines, networkmanager, ostree, podman, selinux, storaged, system
+- **KDE**: plasma-firewall, konsole
+- **Input**: yeetmouse (kmod + userspace)
+- **Utilities**: kairpods, ublue-os-libvirt-workarounds, ublue-setup-services
 
-### Development Tools
-- **Podman** - Container runtime (no Docker)
-  - podman-compose, podman-machine, podman-bootc
-  - Podman-in-Podman support (iptable_nat)
-- **VSCode** - Pre-configured for Podman
-  - Remote Containers extension
-  - Remote SSH extension
-  - Containers extension (not Docker)
-- **Shells** - fish, zsh, tmux
-- **Build tools** - flatpak-builder, git-credential-libsecret
+### System Configuration
+- **Konsole restored** as default terminal (Ctrl+Alt+T, taskbar)
+- **Samba pre-configured** for file sharing (Aurora method)
+- **iptable_nat module** loaded for podman-in-podman
+- **Writable /opt** via symlink to /var/opt (Aurora method)
+- **ACQ100S sleep script** for suspend/resume handling
+- **TPM emulation** via swtpm-workaround service
+- **Firefox config** with Vespera defaults
+- **VSCode profile** auto-applies settings on first launch
 
-### Virtualization
-- **libvirt + virt-manager** - Full VM support
-- **Enhanced QEMU** - VirtIO GPU/VGA, SPICE, USB redirection
-- **VM tools** - virt-viewer, virt-v2v, kcli
-- **TPM emulation** - swtpm workaround for modern VMs
-- **Cockpit** - Web-based VM management
+### Services Enabled
+- podman.socket, libvirtd.socket, virtlogd.socket
+- ublue-os-libvirt-workarounds.service, swtpm-workaround.service
+- ublue-system-setup.service, ublue-user-setup.service (global)
+- vespera-flatpak-manager.service
 
-### Networking & File Sharing
-- **WireGuard** - VPN support
-- **Samba** - Windows file sharing (pre-configured)
-- **iOS support** - ifuse, libimobiledevice
+### User Setup Hooks
+- **Auto-add to libvirt group** on first login
+- **VSCode extensions** auto-install (ms-vscode-remote.remote-containers, ms-vscode-remote.remote-ssh, ms-azuretools.vscode-docker)
+- **Flatpak manager** installs curated app list on first boot
 
-### System Tools
-- **Cockpit suite** - Web-based system management
-  - Podman containers
-  - Virtual machines
-  - Network configuration
-  - Storage management
-  - SELinux troubleshooting
-- **Monitoring** - htop, powerstat, powertop
-- **Backup** - rclone (cloud sync)
-- **Utilities** - p7zip, wl-clipboard, kairpods
+### Just Commands
+- dx-status, dx-test-podman, dx-test-vm, dx-install-extras, dx-vms
+- install-vespera-flatpaks, list-vespera-flatpaks
+
+### Fonts
+- Microsoft TrueType fonts (Arial, Times New Roman, etc.)
+- Nerd Fonts (JetBrainsMono, FiraCode, Hack, etc.)
+
+### Flatpaks
+Curated list includes Firefox, KDE apps (Krita, Okular, Gwenview), gaming tools (Bottles, ProtonPlus, Protontricks), dev tools (Podman Desktop, Kontainer), and utilities (Flatseal, Warehouse, Piper, LocalSend, Vesktop)
 
 ## Installation
 
-### Rebase from Bazzite-nvidia
+### Signed Images (Recommended)
 
 ```bash
-rpm-ostree rebase ostree-unverified-registry:ghcr.io/abirkel/vespera:latest
+# Add signing key
+sudo mkdir -p /etc/pki/containers
+sudo curl -o /etc/pki/containers/vespera.pub https://raw.githubusercontent.com/abirkel/vespera/main/cosign.pub
+
+# Rebase to signed image
+rpm-ostree rebase ostree-image-signed:docker://ghcr.io/abirkel/vespera:latest
 systemctl reboot
 ```
 
-### Rebase from other Fedora Atomic
+### Unsigned Images
 
 ```bash
 rpm-ostree rebase ostree-unverified-registry:ghcr.io/abirkel/vespera:latest
@@ -84,21 +96,11 @@ ujust dx-vms
 
 ### First Boot
 
-On first login:
-- VSCode extensions install automatically
-- You're added to the `libvirt` group automatically
-- Podman and VMs are ready to use
-
-## What's Different from Bazzite-DX
-
-- ✅ **Podman-only** (no Docker)
-- ✅ **Based on bazzite-nvidia** (not bazzite-deck)
-- ✅ **Konsole as default** (not Ptyxis)
-- ✅ **Full Cockpit suite** (8 modules)
-- ✅ **TPM emulation** (swtpm workaround)
-- ✅ **Enhanced VM support** (VirtIO GPU, SPICE, USB)
-- ❌ **No LXC/Incus** (use Podman or VMs)
-- ❌ **No Android tools** (not needed)
+On first login, automatic setup runs:
+- VSCode extensions install
+- User added to libvirt group
+- Flatpaks install from curated list
+- Podman and VMs ready to use
 
 ## Building Locally
 
