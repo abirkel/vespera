@@ -17,5 +17,15 @@
       "matchDepTypes": ["container"],
       "matchFileNames": [".github/workflows/**.yaml", ".github/workflows/**.yml"],
     },
+    {
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/ublue-os/bazzite-nvidia"],
+      "matchFileNames": ["Containerfile"],
+      "followTag": "latest",
+      "pinDigests": true,
+      "automerge": true,
+      "schedule": ["every 2 hours"],
+      "commitMessagePrefix": "chore(deps): "
+    }
   ]
 }
