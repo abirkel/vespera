@@ -30,7 +30,6 @@ dnf5 install -y \
     podman-compose \
     podman-machine \
     podman-tui \
-    podman-bootc \
     qemu-kvm \
     qemu-img \
     qemu-system-x86-core \
