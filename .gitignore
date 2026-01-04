@@ -5,24 +5,3 @@ _build-*/**
 
 # Exploration and reference files
 .temp/
-aurora/
-aurora-common/
-bazzite/
-bazzite-dx-official/
-bluebuild-action/
-bluebuild-bazzite-dx/
-bluebuild-template/
-bluefin/
-bluefin-common/
-image-template/
-ublue-main/
-BAZZITE-NVIDIA-DX-PROPOSAL.md
-DEEP-INSPECTION-FINDINGS.md
-DX-IMPLEMENTATION-CHECKLIST.md
-NON-PACKAGE-INSTALLS.md
-PACKAGE-COMPARISON.md
-QEMU-PACKAGES-EXPLAINED.md
-SAMBA-SETUP-EXPLAINED.md
-VESPERA-DX-CHECKLIST.md
-VESPERA-DX-FINAL.md
-VESPERA-DX-UPDATES.md
