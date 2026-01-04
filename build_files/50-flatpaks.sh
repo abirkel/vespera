@@ -14,6 +14,9 @@ fi
 # Make vespera-flatpak-manager executable
 chmod +x /usr/libexec/vespera-flatpak-manager
 
+# Make flatpak user hook executable
+chmod +x /usr/share/ublue-os/user-setup.hooks.d/40-flatpak.sh
+
 # Enable vespera-flatpak-manager service
 echo "Enabling vespera-flatpak-manager.service..."
 systemctl enable vespera-flatpak-manager.service
