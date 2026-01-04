@@ -9,9 +9,20 @@ copr_install_isolated() {
     shift
     local packages=("$@")
     
+    if [[ ${#packages[@]} -eq 0 ]]; then
+        echo "ERROR: No packages specified for copr_install_isolated"
+        return 1
+    fi
+
+    repo_id="copr:copr.fedorainfracloud.org:${copr_repo//\//:}"
+
+    echo "Installing ${packages[*]} from COPR $copr_repo (isolated)"
+
     dnf5 -y copr enable "$copr_repo"
-    dnf5 -y install --repo="copr:copr.fedorainfracloud.org:${copr_repo/\//:}" "${packages[@]}"
     dnf5 -y copr disable "$copr_repo"
+    dnf5 -y install --enablerepo="$repo_id" "${packages[@]}"
+
+    echo "Installed ${packages[*]} from $copr_repo"
 }
 
 # Main package installation
