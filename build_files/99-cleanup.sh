@@ -15,11 +15,10 @@ for repo in vscode; do
     fi
 done
 
-# Disable COPR repos
-for copr in karmab:kcli gmaglione:podman-bootc ledif:kairpods ublue-os:packages; do
-    repo_file="/etc/yum.repos.d/copr:copr.fedorainfracloud.org:${copr//:/}.repo"
-    if [[ -f "$repo_file" ]]; then
-        sed -i 's/enabled=1/enabled=0/g' "$repo_file"
+# Disable COPR repos (Aurora method - use glob pattern)
+for i in /etc/yum.repos.d/_copr:*.repo; do
+    if [[ -f "$i" ]]; then
+        sed -i 's/enabled=1/enabled=0/g' "$i"
     fi
 done
 
