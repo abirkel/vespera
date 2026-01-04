@@ -1,0 +1,27 @@
+#!/bin/sh
+#
+# ACQ100S suspend/resume workaround
+#
+# /usr/lib/systemd/system-sleep/acq100s
+# Set ownership to root and permissions to 755
+# 
+
+DEVICE="0000:09:00.0"
+DRIVER_PATH="/sys/bus/pci/drivers/atlantic"
+
+case "$1" in
+    pre)
+        echo "ACQ100S-Fix: [PRE] Manual unbind of $DEVICE"
+        if [ -e "$DRIVER_PATH/unbind" ]; then
+            echo "$DEVICE" > "$DRIVER_PATH/unbind" 2>/dev/null
+        fi
+        ;;
+    post)
+        echo "ACQ100S-Fix: [POST] Manual re-bind of $DEVICE"
+        if [ -e "$DRIVER_PATH/bind" ]; then
+            echo "$DEVICE" > "$DRIVER_PATH/bind" 2>/dev/null
+        fi
+        ;;
+esac
+
+exit 0

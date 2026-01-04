@@ -49,4 +49,11 @@ EOF
 # Import just commands
 echo "import \"/usr/share/ublue-os/just/95-vespera.just\"" >> /usr/share/ublue-os/justfile
 
+# Set permissions for ACQ100S sleep script
+if [[ -f /usr/lib/systemd/system-sleep/acq100s ]]; then
+    chmod 755 /usr/lib/systemd/system-sleep/acq100s
+    chown root:root /usr/lib/systemd/system-sleep/acq100s
+    echo "ACQ100S sleep script permissions set"
+fi
+
 echo "System configuration complete"
