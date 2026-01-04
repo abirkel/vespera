@@ -3,6 +3,7 @@ ARG BASE_IMAGE="ghcr.io/ublue-os/bazzite-nvidia:latest"
 FROM scratch AS ctx
 COPY system_files /files
 COPY build_files /build_files
+COPY flatpaks /flatpaks
 
 FROM ${BASE_IMAGE}
 

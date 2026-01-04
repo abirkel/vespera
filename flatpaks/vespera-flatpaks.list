@@ -1,0 +1,21 @@
+# Vespera System Flatpaks
+# These will be automatically installed on first boot
+
+# Web Browser
+org.mozilla.firefox
+
+# KDE Applications
+org.kde.krita
+org.kde.okular
+org.kde.gwenview
+org.kde.kcalc
+
+# Development Tools
+io.podman_desktop.PodmanDesktop
+
+# System Utilities
+com.github.tchx84.Flatseal
+io.github.flattool.Warehouse
+
+# Media
+org.kde.haruna

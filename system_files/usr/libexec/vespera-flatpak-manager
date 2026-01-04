@@ -1,0 +1,42 @@
+#!/usr/bin/bash
+
+# Vespera Flatpak Manager
+# Runs after bazzite-flatpak-manager to install Vespera-specific flatpaks
+
+# SCRIPT VERSION
+VER=1
+VER_FILE="/etc/vespera/flatpak_manager_version"
+VER_RAN=$(cat "$VER_FILE" 2>/dev/null || echo "0")
+
+# Run script if updated or first run
+if [[ -f $VER_FILE && $VER = "$VER_RAN" ]]; then
+  echo "Vespera flatpak manager v$VER has already ran. Exiting..."
+  exit 0
+fi
+
+echo "Running Vespera flatpak manager v$VER..."
+
+# Ensure Flathub is available (should already be set by bazzite-flatpak-manager)
+flatpak remote-add --if-not-exists --system flathub https://flathub.org/repo/flathub.flatpakrepo
+
+# Install Vespera flatpaks if list exists
+FLATPAK_LIST="/etc/ublue-os/vespera-flatpaks.list"
+if [[ -f "$FLATPAK_LIST" ]]; then
+  echo "Installing Vespera flatpaks from $FLATPAK_LIST..."
+  # Filter out comments and empty lines, then install
+  grep -v '^#' "$FLATPAK_LIST" | grep -v '^$' | xargs flatpak --system --noninteractive install --reinstall --or-update || {
+    echo "Warning: Some flatpaks failed to install, but continuing..."
+  }
+else
+  echo "No Vespera flatpak list found at $FLATPAK_LIST"
+fi
+
+# Update all flatpaks
+echo "Updating all system flatpaks..."
+flatpak --system --noninteractive update || true
+
+# Save version
+mkdir -p /etc/vespera
+echo $VER > "$VER_FILE"
+
+echo "Vespera flatpak manager completed successfully!"

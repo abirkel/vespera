@@ -55,6 +55,9 @@ dnf5 install -y \
     samba-winbind-modules \
     ifuse \
     libimobiledevice \
+    libimobiledevice-utils \
+    usbmuxd \
+    ideviceinstaller \
     powerstat \
     powertop \
     rclone \

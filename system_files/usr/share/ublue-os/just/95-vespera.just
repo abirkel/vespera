@@ -44,3 +44,30 @@ dx-install-extras:
 dx-vms:
     #!/usr/bin/bash
     virt-manager &
+
+# Install Vespera system flatpaks
+[group('Apps')]
+install-vespera-flatpaks:
+    #!/usr/bin/bash
+    FLATPAK_LIST="/etc/ublue-os/vespera-flatpaks.list"
+    if [[ -f "$FLATPAK_LIST" ]]; then
+        echo "Installing Vespera flatpaks..."
+        grep -v '^#' "$FLATPAK_LIST" | grep -v '^$' | xargs flatpak --system --noninteractive install --reinstall --or-update
+        echo "Flatpak installation complete!"
+    else
+        echo "Error: Vespera flatpak list not found at $FLATPAK_LIST"
+        exit 1
+    fi
+
+# List Vespera flatpaks
+[group('Apps')]
+list-vespera-flatpaks:
+    #!/usr/bin/bash
+    FLATPAK_LIST="/etc/ublue-os/vespera-flatpaks.list"
+    if [[ -f "$FLATPAK_LIST" ]]; then
+        echo "Vespera Flatpaks:"
+        grep -v '^#' "$FLATPAK_LIST" | grep -v '^$'
+    else
+        echo "Error: Vespera flatpak list not found"
+        exit 1
+    fi
