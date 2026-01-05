@@ -7,8 +7,10 @@ COPY flatpaks /flatpaks
 
 FROM ${BASE_IMAGE}
 
-ARG IMAGE_NAME="${IMAGE_NAME:-vespera}"
-ARG IMAGE_VENDOR="${IMAGE_VENDOR:-abirkel}"
+#ARG IMAGE_NAME="${IMAGE_NAME:-vespera}"
+#ARG IMAGE_VENDOR="${IMAGE_VENDOR:-abirkel}"
+ARG IMAGE_NAME="bazzite-nvidia"
+ARG IMAGE_VENDOR="ublue-os"
 
 # Copy system files first
 COPY --from=ctx /files /
@@ -19,23 +21,12 @@ RUN --mount=type=tmpfs,dst=/tmp \
     mkdir -p /var/roothome && \
     /ctx/build_files/build.sh
 
-# Disable terra-mesa repo to fix bootc-image-builder ISO build failures
-# Issue: The terra-release-mesa package (from Bazzite base) creates a repo config
-# that references a GPG key at /etc/pki/rpm-gpg/RPM-GPG-KEY-terra43-mesa, but this
-# file doesn't exist in the container. During container builds this is fine because
-# packages are already installed, but bootc-image-builder's dependency resolution
-# tries to verify all enabled repos and fails when it can't find the GPG key.
-# Since Mesa is already installed in the base image and users won't need to layer
-# Mesa packages, disabling this repo is safe and prevents ISO build failures.
-# See: https://discussion.fedoraproject.org/t/howto-install-fyra-labs-terra-repository-on-traditional-and-atomic-fedora/124522
-# Terra repos are noted as "in early development" and have known GPG key issues.
-RUN if [ -f /etc/yum.repos.d/terra-mesa.repo ]; then \
-        sed -i 's/enabled=1/enabled=0/g' /etc/yum.repos.d/terra-mesa.repo; \
-        echo "Disabled terra-mesa repo due to missing GPG key"; \
-    fi
-
 # Aurora-style /opt fix - makes /opt writable for downstream/user packages
 RUN rm -rf /opt && ln -s /var/opt /opt
+
+# Fix for bootc-image-builder vendor detection with new Fedora EFI paths
+# See: https://github.com/osbuild/bootc-image-builder/issues/1171
+RUN mkdir -p /usr/lib/bootupd/updates && cp -r /usr/lib/efi/*/*/* /usr/lib/bootupd/updates
 
 # Validate
 RUN bootc container lint
