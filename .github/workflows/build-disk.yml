@@ -15,6 +15,16 @@ on:
         options:
           - amd64
           - arm64
+      build-qcow2:
+        description: "Build QCOW2 image"
+        required: false
+        default: true
+        type: boolean
+      build-iso:
+        description: "Build Anaconda ISO"
+        required: false
+        default: true
+        type: boolean
   pull_request:
     branches:
       - main
@@ -27,7 +37,7 @@ env:
   IMAGE_NAME: ${{ github.event.repository.name }} # output of build.yml, keep in sync
   IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"  # do not edit
   DEFAULT_TAG: "latest"
-  BIB_IMAGE: "ghcr.io/lorbuschris/bootc-image-builder:20250608" # "quay.io/centos-bootc/bootc-image-builder:latest" - see https://github.com/osbuild/bootc-image-builder/pull/954
+  BIB_IMAGE: "quay.io/centos-bootc/bootc-image-builder:latest" # Official bootc-image-builder image
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
@@ -40,7 +50,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        disk-type: ["qcow2", "anaconda-iso"]
+        disk-type: ${{ fromJSON(format('[{0}{1}{2}{3}]', inputs.build-qcow2 && '"qcow2"' || '', (inputs.build-qcow2 && inputs.build-iso) && ',' || '', inputs.build-iso && '"anaconda-iso"' || '', '')) }}
     permissions:
       contents: read
       packages: read
