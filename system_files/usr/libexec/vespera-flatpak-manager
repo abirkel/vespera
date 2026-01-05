@@ -24,16 +24,12 @@ FLATPAK_LIST="/etc/ublue-os/vespera-flatpaks.list"
 if [[ -f "$FLATPAK_LIST" ]]; then
   echo "Installing Vespera flatpaks from $FLATPAK_LIST..."
   # Filter out comments and empty lines, then install
-  grep -v '^#' "$FLATPAK_LIST" | grep -v '^$' | xargs flatpak --system --noninteractive install --reinstall --or-update || {
+  grep -v '^#' "$FLATPAK_LIST" | grep -v '^$' | xargs -I {} flatpak --system --noninteractive install --or-update flathub {} || {
     echo "Warning: Some flatpaks failed to install, but continuing..."
   }
 else
   echo "No Vespera flatpak list found at $FLATPAK_LIST"
 fi
-
-# Update all flatpaks
-echo "Updating all system flatpaks..."
-flatpak --system --noninteractive update || true
 
 # Save version
 mkdir -p /etc/vespera

@@ -49,10 +49,13 @@ dx-vms:
 [group('Apps')]
 install-vespera-flatpaks:
     #!/usr/bin/bash
+    # Ensure Flathub is available
+    flatpak remote-add --if-not-exists --system flathub https://flathub.org/repo/flathub.flatpakrepo
+    
     FLATPAK_LIST="/etc/ublue-os/vespera-flatpaks.list"
     if [[ -f "$FLATPAK_LIST" ]]; then
         echo "Installing Vespera flatpaks..."
-        grep -v '^#' "$FLATPAK_LIST" | grep -v '^$' | xargs flatpak --system --noninteractive install --reinstall --or-update
+        grep -v '^#' "$FLATPAK_LIST" | grep -v '^$' | xargs -I {} flatpak --system --noninteractive install --or-update flathub {}
         echo "Flatpak installation complete!"
     else
         echo "Error: Vespera flatpak list not found at $FLATPAK_LIST"
