@@ -12,6 +12,9 @@ FROM ${BASE_IMAGE}
 ARG IMAGE_NAME="bazzite-nvidia"
 ARG IMAGE_VENDOR="ublue-os"
 
+# Copy cosign public key for image signature verification
+COPY cosign.pub /etc/pki/containers/vespera.pub
+
 # Copy system files first
 COPY --from=ctx /files /
 

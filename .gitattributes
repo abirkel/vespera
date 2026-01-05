@@ -1,0 +1,4 @@
+# Ensure shell scripts and list files always use LF line endings
+*.sh text eol=lf
+*.list text eol=lf
+*.just text eol=lf

@@ -129,6 +129,29 @@ code --list-extensions
 ls -la /opt  # Should be symlink to /var/opt
 ```
 
+## Secure Boot
+
+Vespera supports Secure Boot using ublue-os's signing key (inherited from bazzite-nvidia base).
+
+> [!WARNING]
+> **Steam Deck users:** The Steam Deck does not ship with Secure Boot enabled. Do not enable Secure Boot unless you know what you're doing.
+
+To enroll the key after installation:
+
+```bash
+sudo mokutil --timeout -1
+sudo mokutil --import <(curl https://github.com/ublue-os/akmods/raw/main/certs/public_key.der)
+```
+
+When prompted, enter password: `universalblue`
+
+On next reboot, a blue MOK Manager screen will appear:
+1. Select **Enroll MOK**
+2. Enter password: `universalblue`
+3. Reboot
+
+Your system will now boot with Secure Boot enabled.
+
 ## Credits
 
 Based on:
