@@ -1,7 +1,7 @@
 [Unit]
 Description=Install Vespera system flatpaks
-After=bazzite-flatpak-manager.service
-Wants=bazzite-flatpak-manager.service
+After=bazzite-flatpak-manager.service network-online.target
+Wants=bazzite-flatpak-manager.service network-online.target
 
 [Service]
 Type=oneshot
