@@ -31,6 +31,10 @@ else
   echo "No Vespera flatpak list found at $FLATPAK_LIST"
 fi
 
+# Repair flatpak to ensure extensions are properly mounted
+echo "Repairing flatpak installation to mount extensions..."
+flatpak repair --system
+
 # Save version
 mkdir -p /etc/vespera
 echo $VER > "$VER_FILE"

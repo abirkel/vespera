@@ -57,6 +57,8 @@ install-vespera-flatpaks:
         echo "Installing Vespera flatpaks..."
         grep -v '^#' "$FLATPAK_LIST" | grep -v '^$' | xargs -I {} flatpak --system --noninteractive install --or-update flathub {}
         echo "Flatpak installation complete!"
+        echo "Repairing flatpak to ensure extensions are properly mounted..."
+        flatpak repair --system
     else
         echo "Error: Vespera flatpak list not found at $FLATPAK_LIST"
         exit 1
