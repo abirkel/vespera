@@ -77,7 +77,7 @@ dnf5 install -y \
 
 # Add abirkel-stable repository
 echo "Adding abirkel-stable repository..."
-dnf5 config-manager addrepo --from-repofile=https://abirkel.github.io/rpm-repo/stable.repo
+dnf5 config-manager addrepo --from-repofile=https://abirkel.github.io/rpm-repo/abirkel-stable.repo
 
 # Install packages from abirkel-stable repo
 echo "Installing packages from abirkel-stable..."
