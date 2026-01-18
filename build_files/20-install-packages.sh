@@ -75,15 +75,16 @@ dnf5 install -y \
     plasma-firewall \
     konsole
 
-# Add yeetmouse repository
-echo "Adding yeetmouse repository..."
+# Add abirkel-stable repository
+echo "Adding abirkel-stable repository..."
 dnf5 config-manager addrepo --from-repofile=https://abirkel.github.io/rpm-repo/stable.repo
 
-# Install yeetmouse packages
-echo "Installing yeetmouse packages..."
+# Install packages from abirkel-stable repo
+echo "Installing packages from abirkel-stable..."
 dnf5 install -y \
     kmod-yeetmouse \
-    yeetmouse
+    yeetmouse \
+    pia-nm
 
 # Install from COPRs using isolated enablement (Aurora method)
 echo "Installing COPR packages..."

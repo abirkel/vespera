@@ -18,4 +18,7 @@ systemctl enable swtpm-workaround.service
 systemctl enable ublue-system-setup.service
 systemctl --global enable ublue-user-setup.service
 
+# Enable Homebrew setup service (from Bazzite)
+systemctl enable brew-setup.service
+
 echo "Services enabled"
