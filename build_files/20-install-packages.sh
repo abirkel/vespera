@@ -73,7 +73,10 @@ dnf5 install -y \
     cockpit-storaged \
     cockpit-system \
     plasma-firewall \
-    konsole
+    konsole \
+    levien-inconsolata-fonts \
+    google-roboto-mono-fonts \
+    google-droid-sans-mono-fonts
 
 # Add abirkel-stable repository
 echo "Adding abirkel-stable repository..."
@@ -93,6 +96,24 @@ copr_install_isolated "karmab/kcli" "kcli"
 copr_install_isolated "gmaglione/podman-bootc" "podman-bootc"
 copr_install_isolated "ledif/kairpods" "kairpods"
 copr_install_isolated "ublue-os/packages" "ublue-os-libvirt-workarounds" "ublue-setup-services"
+
+# Install liquidctl and coolercontrol from Terra repository
+echo "Installing liquidctl and coolercontrol from Terra repository..."
+
+# Enable Terra repository (it's disabled by default in base Bazzite image)
+TERRA_REPO="/etc/yum.repos.d/terra.repo"
+if [ -f "$TERRA_REPO" ]; then
+    echo "Enabling Terra repository..."
+    sed -i 's/enabled=0/enabled=1/g' "$TERRA_REPO"
+else
+    echo "Warning: Terra repository not found at $TERRA_REPO"
+fi
+
+dnf5 install -y \
+    liquidctl \
+    coolercontrol
+
+# Note: Terra repo will be disabled again in 99-cleanup.sh to match Bazzite's default state
 
 # Cleanup
 dnf5 clean all

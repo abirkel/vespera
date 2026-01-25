@@ -7,20 +7,20 @@
 # 
 
 DEVICE="0000:09:00.0"
-DRIVER_PATH="/sys/bus/pci/drivers/atlantic"
+MODULE="atlantic"
 
 case "$1" in
     pre)
-        echo "ACQ100S-Fix: [PRE] Manual unbind of $DEVICE"
-        if [ -e "$DRIVER_PATH/unbind" ]; then
-            echo "$DEVICE" > "$DRIVER_PATH/unbind" 2>/dev/null
-        fi
+        echo "ACQ100S-Fix: [PRE] Unloading $MODULE module"
+        # Unload the module before suspend
+        modprobe -r "$MODULE" 2>/dev/null
         ;;
     post)
-        echo "ACQ100S-Fix: [POST] Manual re-bind of $DEVICE"
-        if [ -e "$DRIVER_PATH/bind" ]; then
-            echo "$DEVICE" > "$DRIVER_PATH/bind" 2>/dev/null
-        fi
+        echo "ACQ100S-Fix: [POST] Reloading $MODULE module"
+        # Reload the module after resume
+        modprobe "$MODULE" 2>/dev/null
+        # echo 1 > /sys/bus/pci/devices/$DEVICE/remove
+        # echo 1 > /sys/bus/pci/rescan  
         ;;
 esac
 

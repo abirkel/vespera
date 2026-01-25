@@ -10,7 +10,8 @@ rm -rf /var/log/dnf5.*
 
 # Verify all external repos are disabled
 # terra-mesa: Has missing GPG key causing bootc-image-builder ISO builds to fail; workaround is to disable the repo
-for repo in vscode terra-mesa; do
+# terra: Disabled to match Bazzite's default state (enabled only when needed via ujust)
+for repo in vscode terra-mesa terra; do
     if [[ -f /etc/yum.repos.d/${repo}.repo ]]; then
         sed -i 's/enabled=1/enabled=0/g' /etc/yum.repos.d/${repo}.repo
     fi

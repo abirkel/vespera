@@ -33,6 +33,7 @@ org.freedesktop.Piper
 de.leopoldluley.Clapgrep
 org.fedoraproject.MediaWriter
 org.localsend.localsend_app
+io.github.ilya_zlobintsev.LACT
 
 # Media
 com.github.PintaProject.Pinta
