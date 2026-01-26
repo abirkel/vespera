@@ -24,7 +24,7 @@
       "followTag": "latest",
       "pinDigests": true,
       "automerge": true,
-      "schedule": ["every 2 hours"],
+      "schedule": [],
       "commitMessagePrefix": "chore(deps): "
     }
   ]
