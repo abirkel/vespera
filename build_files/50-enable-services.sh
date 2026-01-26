@@ -21,4 +21,7 @@ systemctl --global enable ublue-user-setup.service
 # Enable Homebrew setup service (from Bazzite)
 systemctl enable brew-setup.service
 
+# Enable coolercontrol daemon (required for coolercontrol to function)
+systemctl enable coolercontrold.service
+
 echo "Services enabled"
