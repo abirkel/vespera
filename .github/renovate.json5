@@ -4,28 +4,31 @@
     "config:best-practices"
   ],
 
+  "forkProcessing": true,
   "rebaseWhen": "never",
 
   "packageRules": [
     {
+      "matchUpdateTypes": ["pin", "pinDigest"],
       "automerge": true,
-      "matchUpdateTypes": ["pin", "pinDigest"]
+      "ignoreTests": true
     },
     {
       "enabled": false,
-      "matchUpdateTypes": ["digest", "pinDigest", "pin"],
+      "matchFileNames": [".github/workflows/**"],
       "matchDepTypes": ["container"],
-      "matchFileNames": [".github/workflows/**.yaml", ".github/workflows/**.yml"]
+      "matchUpdateTypes": ["digest", "pinDigest", "pin"]
     },
     {
+      "description": "Automatically update Bazzite-Nvidia digests to match the latest build",
       "matchDatasources": ["docker"],
       "matchPackageNames": ["ghcr.io/ublue-os/bazzite-nvidia"],
       "matchFileNames": ["Containerfile"],
-      "followTag": "latest",
       "pinDigests": true,
       "automerge": true,
-      "schedule": [],
-      "commitMessagePrefix": "chore(deps): "
+      "ignoreTests": true,
+      "commitMessagePrefix": "chore(deps): ",
+      "enabled": true 
     }
   ]
 }
