@@ -28,7 +28,7 @@
       "pinDigests": true,
       "automerge": true,
       "ignoreTests": true,
-      "schedule": ["every 2 hours"],
+      "schedule": ["0 */2 * * *"],
       "commitMessagePrefix": "chore(deps): ",
       "enabled": true 
     }
