@@ -30,7 +30,6 @@
       "pinDigests": true,
       "automerge": true,
       "ignoreTests": true,
-      "schedule": ["* */2 * * *"],
       "commitMessagePrefix": "chore(deps): ",
       "enabled": true 
     }
