@@ -15,10 +15,12 @@
       "ignoreTests": true
     },
     {
-      "enabled": false,
+      "description": "Automerge GitHub Actions digest updates in workflows",
+      "matchDatasources": ["github-tags"],
       "matchFileNames": [".github/workflows/**"],
-      "matchDepTypes": ["container"],
-      "matchUpdateTypes": ["digest", "pinDigest", "pin"]
+      "matchUpdateTypes": ["digest", "pinDigest"],
+      "automerge": true,
+      "ignoreTests": true
     },
     {
       "description": "Automatically update Bazzite-Nvidia digests to match the latest build",
