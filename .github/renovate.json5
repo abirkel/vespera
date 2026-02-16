@@ -5,6 +5,7 @@
   ],
 
   "forkProcessing": true,
+  "dependencyDashboard": true,
   "rebaseWhen": "never",
 
   "packageRules": [
@@ -27,6 +28,7 @@
       "pinDigests": true,
       "automerge": true,
       "ignoreTests": true,
+      "schedule": ["every 2 hours"],
       "commitMessagePrefix": "chore(deps): ",
       "enabled": true 
     }
