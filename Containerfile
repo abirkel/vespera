@@ -1,4 +1,4 @@
-ARG BASE_IMAGE="ghcr.io/ublue-os/bazzite-nvidia:latest@sha256:829e0cbd5c33b66a51a7a890c8f671c30391cacfd1b8fa5deedd1e495c17ace9"
+ARG BASE_IMAGE="ghcr.io/ublue-os/bazzite-nvidia:latest@sha256:6a55a9fc0dce075d17487fd375e43762918013df764c6bc653ee4906a133cdf2"
 
 FROM scratch AS ctx
 COPY system_files /files
