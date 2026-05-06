@@ -86,8 +86,7 @@ dnf5 config-manager addrepo --from-repofile=https://abirkel.github.io/rpm-repo/a
 echo "Installing packages from abirkel-stable..."
 dnf5 install -y \
     kmod-yeetmouse \
-    yeetmouse \
-    pia-nm
+    yeetmouse
 
 # Install from COPRs using isolated enablement (Aurora method)
 echo "Installing COPR packages..."
