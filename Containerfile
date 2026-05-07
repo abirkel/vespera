@@ -1,4 +1,4 @@
-ARG BASE_IMAGE="ghcr.io/ublue-os/bazzite-nvidia:latest@sha256:e8cc0dc5f42b8314302e70d348c8c554ed2bad66b63e80be5fc46634e5901cc8"
+ARG BASE_IMAGE="ghcr.io/ublue-os/bazzite-nvidia-open:latest@sha256:4ced0855091f220f44f55c7983d9873309e441c2c610b0666b1279362557ed69"
 
 FROM scratch AS ctx
 COPY system_files /files
@@ -9,7 +9,7 @@ FROM ${BASE_IMAGE}
 
 #ARG IMAGE_NAME="${IMAGE_NAME:-vespera}"
 #ARG IMAGE_VENDOR="${IMAGE_VENDOR:-abirkel}"
-ARG IMAGE_NAME="bazzite-nvidia"
+ARG IMAGE_NAME="bazzite-nvidia-open"
 ARG IMAGE_VENDOR="ublue-os"
 
 # Copy cosign public key for image signature verification
