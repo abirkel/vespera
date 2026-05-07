@@ -20,25 +20,13 @@ cd "${TEMP_DIR}"
 echo "Extracting fonts archive..."
 7z x "${FONTS_ARCHIVE}" -y > /dev/null
 
-# Install mscore fonts
-if [ -d "mscore" ]; then
-    echo "Installing MS Core fonts..."
-    MSCORE_DIR="/usr/share/fonts/mscore"
-    mkdir -p "${MSCORE_DIR}"
-    cp mscore/*.{ttf,ttc,TTF,TTC} "${MSCORE_DIR}/" 2>/dev/null || true
-    chmod 644 "${MSCORE_DIR}"/* 2>/dev/null || true
-    echo "MS Core fonts installed to ${MSCORE_DIR}"
-fi
-
-# Install additional fonts
-if [ -d "additional" ]; then
-    echo "Installing additional fonts..."
-    ADDITIONAL_DIR="/usr/share/fonts/additional"
-    mkdir -p "${ADDITIONAL_DIR}"
-    cp additional/*.{ttf,ttc,TTF,TTC} "${ADDITIONAL_DIR}/" 2>/dev/null || true
-    chmod 644 "${ADDITIONAL_DIR}"/* 2>/dev/null || true
-    echo "Additional fonts installed to ${ADDITIONAL_DIR}"
-fi
+# Install all fonts from flat archive root
+echo "Installing fonts..."
+FONTS_DIR="/usr/share/fonts/msfonts"
+mkdir -p "${FONTS_DIR}"
+find . -maxdepth 1 \( -iname "*.ttf" -o -iname "*.ttc" \) -exec cp {} "${FONTS_DIR}/" \;
+chmod 644 "${FONTS_DIR}"/*
+echo "Fonts installed to ${FONTS_DIR}"
 
 # Update font cache
 echo "Updating font cache..."
