@@ -95,6 +95,8 @@ copr_install_isolated "karmab/kcli" "kcli"
 copr_install_isolated "gmaglione/podman-bootc" "podman-bootc"
 copr_install_isolated "ledif/kairpods" "kairpods"
 copr_install_isolated "ublue-os/packages" "ublue-os-libvirt-workarounds" "ublue-setup-services"
+copr_install_isolated "major-tom/klassy" "klassy"
+copr_install_isolated "fuddlesworth/plasmazones" "plasmazones"
 
 # Install liquidctl and coolercontrol from Terra repository
 echo "Installing liquidctl and coolercontrol from Terra repository..."
