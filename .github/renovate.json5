@@ -25,7 +25,7 @@
     {
       "description": "Automatically update Bazzite-Nvidia digests to match the latest build",
       "matchDatasources": ["docker"],
-      "matchPackageNames": ["ghcr.io/ublue-os/bazzite-nvidia"],
+      "matchPackageNames": ["ghcr.io/ublue-os/bazzite-nvidia-open"],
       "matchFileNames": ["Containerfile"],
       "pinDigests": true,
       "automerge": true,
