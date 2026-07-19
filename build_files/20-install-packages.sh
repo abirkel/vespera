@@ -116,22 +116,6 @@ dnf5 install -y \
 
 # Note: Terra repo will be disabled again in 99-cleanup.sh to match Bazzite's default state
 
-# Add the RPM Fusion repositories
-dnf5 install -y \
-    https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm \
-    https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm
-
-# Install multimedia and thumbnail packages
-dnf5 install -y \
-    libheif-freeworld \
-    libheif-tools \
-    qt-heif-image-plugin \
-    kf6-kimageformats \
-    kdegraphics-thumbnailers
-
-# Disable the RPM Fusion repositories
-dnf5 config-manager --set-disabled rpmfusion-free rpmfusion-nonfree
-
 # Cleanup
 dnf5 clean all
 rm -rf /var/cache/dnf5/*
