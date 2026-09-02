@@ -70,10 +70,15 @@ rpm -q samba-usershares >/dev/null 2>&1 \
 firewall-offline-cmd --service=samba --service=samba-client || \
     warn "firewall-offline-cmd failed for samba"
 
-# Persistent policy booleans, written into the image's SELinux store.
-setsebool -P samba_enable_home_dirs=1 || warn "setsebool samba_enable_home_dirs failed"
-setsebool -P samba_export_all_ro=1    || warn "setsebool samba_export_all_ro failed"
-setsebool -P samba_export_all_rw=1    || warn "setsebool samba_export_all_rw failed"
+# SELinux booleans are NOT set here. setsebool -P writes
+# /var/lib/selinux/targeted/active/booleans.local, and /var is machine state: the base ships
+# nothing under /var but /var/tmp, 99-cleanup.sh wipes /var back to exactly that, and bootc
+# does not carry /var in the image at all. So a build-time setsebool writes a file that is
+# deleted before the image is committed — while exiting 0, which is how three dead lines
+# survived several audits here. (One of the three did report a failure, but only because an
+# earlier %post scriptlet had already broken the policy store: semanage cannot rename
+# /etc/selinux/targeted/active across overlayfs layers, "Invalid cross-device link".)
+# They are set at boot instead, by system-setup.hooks.d/20-selinux-booleans.sh.
 
 # Drop [homes]: it exports every user's home over SMB by default.
 if [[ -f /etc/samba/smb.conf ]]; then

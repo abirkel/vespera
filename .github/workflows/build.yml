@@ -125,12 +125,18 @@ jobs:
 
       # Verify the base image's signature before building on it.
       - name: Install cosign
-        uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
-          # PINNED, and to a 3.x. This action's own default is cosign v2.5.3, which does
-          # not have --new-bundle-format at all ("unknown flag", so the sign step failed
-          # after a full 50-minute build). The flag is required below, so the cosign major
-          # is not something to leave to the action's default.
+          # BOTH pins matter, and they are a matched pair — the same combination ublue's
+          # image-template uses.
+          #
+          # cosign v3.1.2, because the installer's own default is v2.5.3, which has no
+          # --new-bundle-format flag at all (the sign step died on "unknown flag" after a
+          # full 50-minute build).
+          #
+          # Installer v4.1.2, because v3.9.2 verifies the requested binary against a
+          # detached cosign-linux-amd64.sig, and cosign 3.x releases no longer publish one
+          # — curl exits 22 on the 404, so v3.9.2 simply cannot install any cosign 3.x.
           cosign-release: v3.1.2
 
       - name: Verify base image signature
