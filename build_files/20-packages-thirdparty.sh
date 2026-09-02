@@ -177,6 +177,12 @@ grep -q '^NAME="Fedora Linux"' /usr/lib/os-release \
 # Renovate to bump — this one download is deliberately not reproducible. Fetched from
 # the stable /releases/download/master/ URL rather than the API, which is rate-limited
 # per IP and fails on shared CI runners.
+#
+# UNSIGNED, deliberately accepted: the published RPM carries no OpenPGP signature at all
+# (verified — `rpm -qip` reports "Signature: (none)"), so there is nothing to verify it
+# against and dnf logs "skipped OpenPGP checks ... @commandline" for it. The trust anchor
+# is TLS to github.com/ublue-os, which is the same organisation whose base image this whole
+# build already rests on, so it widens the trust boundary by nothing.
 # ---------------------------------------------------------------------------
 log "cicpoffs (GitHub rolling release)"
 FEDORA_MAJOR="$(fedora_version)"
