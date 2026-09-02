@@ -126,6 +126,12 @@ jobs:
       # Verify the base image's signature before building on it.
       - name: Install cosign
         uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+        with:
+          # PINNED, and to a 3.x. This action's own default is cosign v2.5.3, which does
+          # not have --new-bundle-format at all ("unknown flag", so the sign step failed
+          # after a full 50-minute build). The flag is required below, so the cosign major
+          # is not something to leave to the action's default.
+          cosign-release: v3.1.2
 
       - name: Verify base image signature
         run: |
@@ -242,8 +248,19 @@ jobs:
           DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           set -euo pipefail
+          # Both flags force the OLD signature bundle format, which is the only one
+          # containers/image and rpm-ostree can verify — so it is what makes the
+          # sigstoreSigned rule in 85-signing.sh's policy.json actually work:
+          #   https://github.com/containers/container-libs/issues/388
+          #   https://github.com/coreos/rpm-ostree/issues/5509
+          # Same invocation as ublue's image-template. cosign already warns that
+          # --new-bundle-format is deprecated and the new format "will be the only
+          # supported format in future versions", so this needs revisiting when the
+          # verifiers catch up; until then a cosign bump could silently produce
+          # signatures the installed system cannot check.
           cosign sign -y \
             --new-bundle-format=false \
+            --use-signing-config=false \
             --key env://COSIGN_PRIVATE_KEY \
             "${IMAGE_REGISTRY}/${IMAGE_NAME}@${DIGEST}"
 
