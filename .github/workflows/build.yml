@@ -276,4 +276,19 @@ jobs:
         with:
           subject-name: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.push.outputs.digest }}
-          push-to-registry: true
+          # MUST stay false, which is also the default. With push-to-registry: true this
+          # action publishes the provenance bundle into the registry's OCI referrers
+          # fallback index — a bare `sha256-<digest>` tag holding an
+          # application/vnd.dev.sigstore.bundle.v0.3+json entry. That bundle is keyless
+          # (GitHub OIDC -> Fulcio certificate), so referrers-aware cosign enumerates it
+          # alongside our real signature and then refuses the whole verification:
+          #   Error: no matching attestations: expected key signature, not certificate
+          # which breaks `just verify` and `cosign verify --key cosign.pub` even though the
+          # cosign signature itself is valid (confirmed independently with
+          # `openssl dgst -verify` against the simple-signing payload).
+          #
+          # The attestation is not lost: it stays in GitHub's attestation store and is
+          # verified with `gh attestation verify --owner <owner> oci://<image>`. Only its
+          # registry copy is dropped. ublue's image-template attaches no attestation at
+          # all, so it never hit this.
+          push-to-registry: false
