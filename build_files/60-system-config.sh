@@ -64,9 +64,19 @@ log "Samba: firewall and SELinux"
 rpm -q samba-usershares >/dev/null 2>&1 \
     || warn "samba-usershares is no longer in the base; Dolphin folder sharing needs it"
 
+# The three samba-winbind packages in the manifest are NOT part of this Samba support and
+# must not be trimmed as though they were: `wine` requires samba-winbind-clients (for
+# ntlm_auth), which pulls samba-winbind and samba-winbind-modules (verified with
+# `repoquery --whatrequires`). They arrive with wine, and leave only with it.
+
 # Not redundant despite the permissive default zone. Verified:
 # DefaultZone=FedoraWorkstation opens TCP+UDP 1025-65535, so Steam's ports need
 # nothing — but SMB uses 137/138/udp and 139/445/tcp, all below 1025.
+#
+# `samba-client` comes back as "ALREADY_ENABLED" in the build log: the base already has it
+# in the default zone. That is expected output, not an error — the call still exits 0, and
+# naming it keeps the rule from silently disappearing if the base ever drops it. Only
+# `samba` is actually being added here.
 firewall-offline-cmd --service=samba --service=samba-client || \
     warn "firewall-offline-cmd failed for samba"
 
