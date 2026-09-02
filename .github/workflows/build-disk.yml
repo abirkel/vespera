@@ -1,134 +1,147 @@
 ---
 name: Build disk images
-
 on:
   workflow_dispatch:
     inputs:
-      upload-to-s3:
-        description: "Upload to S3"
-        required: false
-        default: false
-        type: boolean
-      platform:
+      target:
+        description: Artifact to build
         required: true
+        default: iso
         type: choice
-        options:
-          - amd64
-          - arm64
-      build-qcow2:
-        description: "Build QCOW2 image"
-        required: false
-        default: true
-        type: boolean
-      build-iso:
-        description: "Build Anaconda ISO"
-        required: false
-        default: true
-        type: boolean
-      iso-variant:
-        description: "ISO Desktop Variant"
-        required: false
-        default: "kde"
-        type: choice
-        options:
-          - kde
-          - gnome
-  pull_request:
-    branches:
-      - main
-    paths:
-      - './disk_config/disk.toml'
-      - './disk_config/iso-kde.toml'
-      - './disk_config/iso-gnome.toml'
-      - './.github/workflows/build-disk.yml'
+        options: [iso, qcow2, raw]
+      tag:
+        description: Image tag to build the artifact from
+        required: true
+        default: latest
+        type: string
+  # Monthly: a reasonably fresh ISO without burning runner minutes on every push.
+  schedule:
+    - cron: '40 6 1 * *'
 
 env:
-  IMAGE_NAME: ${{ github.event.repository.name }} # output of build.yml, keep in sync
-  IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"  # do not edit
-  DEFAULT_TAG: "latest"
-  BIB_IMAGE: "quay.io/centos-bootc/bootc-image-builder:latest" # Official bootc-image-builder image
+  IMAGE_NAME: vespera
+  IMAGE_REGISTRY: ghcr.io/${{ github.repository_owner }}
+  # osbuild's is the maintained one. quay.io/centos-bootc/bootc-image-builder is
+  # ARCHIVED — its last build targets Fedora 42 and cannot lay out an F44 image.
+  BIB_IMAGE: ghcr.io/osbuild/bootc-image-builder:latest
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.target || 'iso' }}
+  cancel-in-progress: false
+
+permissions: {}
 
 jobs:
-  build:
-    name: Build disk images
-    runs-on: ${{ inputs.platform == 'amd64' && 'ubuntu-24.04' || 'ubuntu-24.04-arm' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        disk-type: ${{ fromJSON(format('[{0}{1}{2}{3}]', inputs.build-qcow2 && '"qcow2"' || '', (inputs.build-qcow2 && inputs.build-iso) && ',' || '', inputs.build-iso && '"anaconda-iso"' || '', '')) }}
+  build-disk:
+    name: ${{ inputs.target || 'iso' }}
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: read
       id-token: write
-
     steps:
-      - name: Prepare environment
-        run: |
-          USER_UID=$(id -u)
-          USER_GID=$(id -g)
-          # Concatenate the types with a hyphen
-          DISK_TYPE=$(echo "${{ matrix.disk-type }}" | tr ' ' '-')
-          # Lowercase the image uri
-          echo "IMAGE_REGISTRY=${IMAGE_REGISTRY,,}" >> ${GITHUB_ENV}
-          echo "IMAGE_NAME=${IMAGE_NAME,,}" >> ${GITHUB_ENV}
-          echo "DISK_TYPE=${DISK_TYPE}" >> ${GITHUB_ENV}
-          echo "USER_UID=${USER_UID}" >> ${GITHUB_ENV}
-          echo "USER_GID=${USER_GID}" >> ${GITHUB_ENV}
-
-      - name: Install dependencies
-        if: inputs.platform == 'arm64'
-        run: |
-          set -x
-          sudo apt update -y
-          sudo apt install -y \
-            podman
-
-      - name: Maximize build space
-        if: inputs.platform != 'arm64'
-        uses: ublue-os/remove-unwanted-software@cc0becac701cf642c8f0a6613bbdaf5dc36b259e # v9
+      - name: Free disk space
+        uses: ublue-os/remove-unwanted-software@517622d6452028f266b7ba4cc9a123b5f58a6b53 # v9
         with:
           remove-codeql: true
 
+      - name: Mount BTRFS for podman storage
+        uses: ublue-os/container-storage-action@25e05be4948f77746938687877829d15c5038036
+        continue-on-error: true
+        with:
+          mount-opts: compress-force=zstd:2
+
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Build disk images
-        id: build
-        uses: osbuild/bootc-image-builder-action@8661cd3832544ad68c12dcde8681b13ab0f56a8d # main
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
         with:
-          builder-image: ${{ env.BIB_IMAGE }}
-          config-file: ${{ matrix.disk-type == 'anaconda-iso' && format('./disk_config/iso-{0}.toml', inputs.iso-variant || 'kde') || './disk_config/disk.toml' }}
-          image: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.DEFAULT_TAG }}
-          chown: ${{ env.USER_UID }}:${{ env.USER_GID }}
-          types: ${{ matrix.disk-type }}
-          additional-args: --rootfs xfs --use-librepo=True
+          persist-credentials: false
 
-      - name: Upload disk images and Checksum to Job Artifacts
-        if: inputs.upload-to-s3 != true && github.event_name != 'pull_request'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          path: ${{ steps.build.outputs.output-directory }}
-          if-no-files-found: error
-          retention-days: 0
-          compression-level: 0
-          overwrite: true
-      
-      - name: Upload to S3
-        if: inputs.upload-to-s3 == true && github.event_name != 'pull_request'
-        shell: bash
-        env:
-          RCLONE_CONFIG_S3_TYPE: s3
-          RCLONE_CONFIG_S3_PROVIDER: ${{ secrets.S3_PROVIDER }}
-          RCLONE_CONFIG_S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
-          RCLONE_CONFIG_S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
-          RCLONE_CONFIG_S3_REGION: ${{ secrets.S3_REGION }}
-          RCLONE_CONFIG_S3_ENDPOINT: ${{ secrets.S3_ENDPOINT }}
-          SOURCE_DIR: ${{ steps.build.outputs.output-directory }}
+      - name: Resolve inputs
+        id: inputs
         run: |
-          sudo apt-get update
-          sudo apt-get install -y rclone
-          rclone copy $SOURCE_DIR S3:${{ secrets.S3_BUCKET_NAME }}
+          set -euo pipefail
+          TARGET="${{ inputs.target || 'iso' }}"
+          TAG="${{ inputs.tag || 'latest' }}"
+          case "${TARGET}" in
+            iso)   TYPE=anaconda-iso; CONFIG=disk_config/iso-kde.toml ;;
+            qcow2) TYPE=qcow2;        CONFIG=disk_config/disk.toml ;;
+            raw)   TYPE=raw;          CONFIG=disk_config/disk.toml ;;
+            *) echo "unknown target ${TARGET}" >&2; exit 1 ;;
+          esac
+          {
+            echo "type=${TYPE}"
+            echo "config=${CONFIG}"
+            echo "tag=${TAG}"
+          } >>"$GITHUB_OUTPUT"
+          echo "Building ${TYPE} from ${TAG} using ${CONFIG}"
+
+      - name: Log in to GHCR
+        uses: redhat-actions/podman-login@4934294ad0449894bcd1e9f191899d7292469603 # v1.7
+        with:
+          registry: ${{ env.IMAGE_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+
+      # Signed images only: an installer built from an unverified image hands out
+      # media that installs unverified content.
+      - name: Verify image signature
+        run: |
+          set -euo pipefail
+          cosign verify \
+            --key cosign.pub \
+            "${IMAGE_REGISTRY}/${IMAGE_NAME}:${{ steps.inputs.outputs.tag }}"
+
+      - name: Pull image
+        run: |
+          set -euo pipefail
+          podman pull "${IMAGE_REGISTRY}/${IMAGE_NAME}:${{ steps.inputs.outputs.tag }}"
+
+      - name: Build artifact
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          # --privileged: needs loop devices and mount(2).
+          # --local: use local podman storage, so the digest verified above is what
+          #          actually gets installed.
+          sudo podman run --rm --privileged \
+            --security-opt label=type:unconfined_t \
+            -v /var/lib/containers/storage:/var/lib/containers/storage \
+            -v "${PWD}/output:/output" \
+            -v "${PWD}/${{ steps.inputs.outputs.config }}:/config.toml:ro" \
+            "${BIB_IMAGE}" \
+            --type "${{ steps.inputs.outputs.type }}" \
+            --use-librepo=True \
+            --local \
+            "${IMAGE_REGISTRY}/${IMAGE_NAME}:${{ steps.inputs.outputs.tag }}"
+          sudo chown -R "$(id -u):$(id -g)" output
+
+      - name: Rename and checksum
+        id: artifact
+        run: |
+          set -euo pipefail
+          NAME="${IMAGE_NAME}-${{ steps.inputs.outputs.tag }}"
+          find output -type f \( -name '*.iso' -o -name '*.qcow2' -o -name '*.raw' \) \
+            -print0 | while IFS= read -r -d '' f; do
+              ext="${f##*.}"
+              mv "$f" "output/${NAME}.${ext}"
+            done
+          cd output
+          find . -maxdepth 1 -type f ! -name '*.sha256' -exec sha256sum {} + >"${NAME}.sha256"
+          ls -lh
+          echo "name=${NAME}" >>"$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.artifact.outputs.name }}-${{ inputs.target || 'iso' }}
+          path: |
+            output/*.iso
+            output/*.qcow2
+            output/*.raw
+            output/*.sha256
+          retention-days: 30
+          compression-level: 0
+          if-no-files-found: error

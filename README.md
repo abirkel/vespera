@@ -1,164 +1,110 @@
-# Vespera
+# vespera
 
+A custom [bootc](https://bootc-dev.github.io/bootc/) image: Fedora Kinoite with
+NVIDIA, gaming and light development tooling, built on
+`ghcr.io/ublue-os/kinoite-nvidia`.
+
+
+```
+ghcr.io/abirkel/vespera:latest
+```
 [![build-ublue](https://github.com/abirkel/vespera/actions/workflows/build.yml/badge.svg)](https://github.com/abirkel/vespera/actions/workflows/build.yml)
 
-Custom Bazzite-nvidia with Podman-focused developer tools.
+## Why this base
 
-## What We Changed
+| Candidate | Verdict |
+| --- | --- |
+| `ublue-os/kinoite-nvidia` | **Chosen.** Kinoite + `nvidia-open` + a Secure-Boot-signed matching kernel + the full 32-bit driver stack + negativo17 codecs. |
+| `bazzite` / `bazzite-nvidia-open` | Replaces Discover with Bazaar, masks the appstream cache refresh, overrides branding, defaults and the update stack. Undoing all that is more work than adding to Kinoite. |
+| `aurora-dx` | GNOME-adjacent developer focus; the DX layer is mostly unwanted here. |
+| `fedora/fedora-kinoite` | Means owning the NVIDIA kmod signing chain. |
 
-### Packages Added
-- **Containers**: podman-compose, podman-machine, podman-bootc, podman-tui
-- **Virtualization**: qemu-kvm, libvirt, virt-manager, virt-viewer, virt-v2v, kcli, edk2-ovmf
-- **QEMU enhancements**: VirtIO GPU/VGA, SPICE, USB redirection
-- **Development**: VSCode, flatpak-builder, git-credential-libsecret
-- **Shells**: fish, zsh, tmux
-- **Networking**: wireguard-tools, samba (winbind stack)
-- **iOS support**: ifuse, libimobiledevice, usbmuxd, ideviceinstaller
-- **System tools**: htop, powerstat, powertop, rclone, p7zip, wl-clipboard
-- **Cockpit modules**: machines, networkmanager, ostree, podman, selinux, storaged, system
-- **KDE**: plasma-firewall, konsole
-- **Input**: yeetmouse (kmod + userspace)
-- **Utilities**: kairpods, ublue-os-libvirt-workarounds, ublue-setup-services
+The base ships Fedora's kernel rebuilt and signed with ublue's MOK, which is what
+lets prebuilt out-of-tree modules load under Secure Boot. **Do not swap the
+kernel** — that breaks the signing chain and every kmod with it.
 
-### System Configuration
-- **Konsole restored** as default terminal (Ctrl+Alt+T, taskbar)
-- **Samba pre-configured** for file sharing (Aurora method)
-- **iptable_nat module** loaded for podman-in-podman
-- **Writable /opt** via symlink to /var/opt (Aurora method)
-- **ACQ100S sleep script** for suspend/resume handling
-- **TPM emulation** via swtpm-workaround service
-- **Firefox config** with Vespera defaults
-- **VSCode profile** auto-applies settings on first launch
+## Repository layout
 
-### Services Enabled
-- podman.socket, libvirtd.socket, virtlogd.socket
-- ublue-os-libvirt-workarounds.service, swtpm-workaround.service
-- ublue-system-setup.service, ublue-user-setup.service (global)
-- vespera-flatpak-manager.service
-
-### User Setup Hooks
-- **Auto-add to libvirt group** on first login
-- **VSCode extensions** auto-install (ms-vscode-remote.remote-containers, ms-vscode-remote.remote-ssh, ms-azuretools.vscode-docker)
-- **Flatpak manager** installs curated app list on first boot
-
-### Just Commands
-- dx-status, dx-test-podman, dx-test-vm, dx-install-extras, dx-vms
-- install-vespera-flatpaks, list-vespera-flatpaks
-
-### Fonts
-- Microsoft TrueType fonts (Arial, Times New Roman, etc.)
-- Nerd Fonts (JetBrainsMono, FiraCode, Hack, etc.)
-
-### Flatpaks
-Curated list includes Firefox, KDE apps (Krita, Okular, Gwenview), gaming tools (Bottles, ProtonPlus, Protontricks), dev tools (Podman Desktop, Kontainer), and utilities (Flatseal, Warehouse, Piper, LocalSend, Vesktop)
-
-## Installation
-
-### Signed Images (Recommended)
-
-```bash
-# Add signing key
-sudo mkdir -p /etc/pki/containers
-sudo curl -o /etc/pki/containers/vespera.pub https://raw.githubusercontent.com/abirkel/vespera/main/cosign.pub
-
-# Rebase to signed image
-rpm-ostree rebase ostree-image-signed:docker://ghcr.io/abirkel/vespera:latest
-systemctl reboot
+```
+Containerfile                  base ARGs, akmods mount, one RUN, then bootc lint
+Justfile                       just check, build, rechunk, disk, gen-keys
+cosign.pub                     public signing key, baked into the image
+build_files/
+  build.sh                     runs [0-9][0-9]-*.sh in glob order
+  lib/common.sh                log/warn/die, retry, fetch, copr_install, repo_install
+  00-dnf-policy.sh             install_weak_deps=False  (must be first)
+  10-packages-fedora.sh        Fedora packages, one transaction
+  20-packages-thirdparty.sh    negativo17, Terra, COPRs, ScopeBuddy, cicpoffs
+  30-kmods.sh                  v4l2loopback (akmods), yeetmouse
+  40-fonts.sh                  Nerd Fonts, core fonts
+  50-flatpaks.sh               validates the preinstall.d declarations
+  60-system-config.sh          system_files/, groups, samba, /etc hygiene
+  70-services.sh               systemd unit state
+  80-image-info.sh             image-info.json; asserts branding is stock
+  85-signing.sh                cosign key + registries.d + policy.json
+  99-cleanup.sh                repo state, sanity checks, /var and /boot cleanup
+system_files/                  copied to / verbatim (rsync -aK)
+disk_config/{disk,iso-kde}.toml  bootc-image-builder configs
+.github/workflows/build.yml      build, rechunk, sign, push, attest
+.github/workflows/build-disk.yml ISO / qcow2 / raw
+.github/renovate.json5           digest pinning
 ```
 
-### Unsigned Images
+## Getting started
+
+### 1. Signing keys (required)
 
 ```bash
-rpm-ostree rebase ostree-unverified-registry:ghcr.io/abirkel/vespera:latest
-systemctl reboot
+just gen-keys
+gh secret set SIGNING_SECRET < cosign.key
+git add cosign.pub
+shred -u cosign.key
 ```
 
-## Usage
-
-### Just Commands
+### 2. Check, then build
 
 ```bash
-# Check environment status
-ujust dx-status
-
-# Test Podman
-ujust dx-test-podman
-
-# Test VMs
-ujust dx-test-vm
-
-# Install extra dev tools (lazygit, lazydocker, dive)
-ujust dx-install-extras
-
-# Open virt-manager
-ujust dx-vms
+just check          # syntax, shellcheck, yaml, toml, layout — what CI runs first
+just build          # full local build (~40 GB free)
+just build-fast     # skips MS fonts and the yeetmouse kmod
+just rechunk        # split into per-package layers (see Update download size)
+just diff-base      # package diff against kinoite-nvidia
 ```
 
-### First Boot
-
-On first login, automatic setup runs:
-- VSCode extensions install
-- User added to libvirt group
-- Flatpaks install from curated list
-- Podman and VMs ready to use
-
-## Building Locally
+### 3. Install
 
 ```bash
-podman build -t vespera:latest .
+sudo bootc switch --enforce-container-sigpolicy ghcr.io/abirkel/vespera:latest
+# or build media:
+just disk iso
 ```
 
-## Verification
-
-After reboot, verify:
+## Disk and ISO artifacts
 
 ```bash
-# Check groups
-groups | grep libvirt
-
-# Test Podman
-podman run --rm hello-world
-
-# Test VMs
-virsh list --all
-
-# Check VSCode extensions
-code --list-extensions
-
-# Verify /opt is writable
-ls -la /opt  # Should be symlink to /var/opt
+just disk iso        # anaconda-iso, disk_config/iso-kde.toml
+just disk qcow2      # disk_config/disk.toml
+just run-vm          # boot the qcow2 to smoke-test
 ```
 
-## Secure Boot
+or run the **Build disk images** workflow manually.
 
-Vespera supports Secure Boot using ublue-os's signing key (inherited from bazzite-nvidia base).
+## 4. First boot
 
-> [!WARNING]
-> **Steam Deck users:** The Steam Deck does not ship with Secure Boot enabled. Do not enable Secure Boot unless you know what you're doing.
+1. **Log out and back in once.** `ublue-system-setup.service` adds the account to
+   `libvirt`, `plugdev` and `gamemode`; group membership only applies to new
+   sessions.
+2. **Flatpaks install in the background** via `vespera-flatpak-setup.service` —
+   `journalctl -u vespera-flatpak-setup`.
+3. **`ujust image-status`** — image ref, NVIDIA driver and kmod state, virt sockets,
+   podman, whether each out-of-tree kmod matches the booted kernel, all four Discover
+   backends.
+4. **`ujust check-overlays`** confirms Flatpak games get GPU acceleration and that
+   the layer branch still matches their runtime. **`ujust check-ntsync`** confirms the
+   ntsync device is present and 0666.
+5. **`ujust setup-lact`** for GPU fan curves.
+6. Shell is unchanged (bash). `zsh` is installed with fish-like plugins wired up in
+   `/etc/skel/.zshrc`; `chsh -s /usr/bin/zsh` to switch. Existing accounts do not get
+   `/etc/skel` — copy the file across by hand.
 
-To enroll the key after installation:
-
-```bash
-sudo mokutil --timeout -1
-sudo mokutil --import <(curl https://github.com/ublue-os/akmods/raw/main/certs/public_key.der)
-```
-
-When prompted, enter password: `universalblue`
-
-On next reboot, a blue MOK Manager screen will appear:
-1. Select **Enroll MOK**
-2. Enter password: `universalblue`
-3. Reboot
-
-Your system will now boot with Secure Boot enabled.
-
-## Credits
-
-Based on:
-- [Bazzite](https://github.com/ublue-os/bazzite) by Universal Blue
-- [Aurora](https://github.com/ublue-os/aurora) by Universal Blue
-- [image-template](https://github.com/ublue-os/image-template) by Universal Blue
-
-## License
-
-See [LICENSE](LICENSE)
+Help recipes: `ujust help-smb`, `help-iphone`, `help-audio`, `help-gamescope`.

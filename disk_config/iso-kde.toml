@@ -1,28 +1,65 @@
-[customizations.installer.kickstart]
-contents = """
-lang en_US.UTF-8
-keyboard us
-
-%post --erroronfail
-# bootc switch --mutate-in-place --enforce-container-sigpolicy --transport registry ghcr.io/abirkel/vespera:latest
-
-# DELETEME: This is a nasty hack. Remove whenever http://github.com/bootc-dev/bootc/commit/f7b41cc1ebfc823e9de848b55773faddc59ecf88 makes it into a release
-sed -i 's|container-image-reference=.*|container-image-reference=ostree-image-signed:docker://ghcr.io/abirkel/vespera:latest|' /ostree/deploy/*/deploy/*.origin
-%end
-"""
+# bootc-image-builder config for the installer ISO (anaconda-iso).
+#
+# Built with ghcr.io/osbuild/bootc-image-builder.
+#
+# What the kickstart does and why
+# ------------------------------------------------------------------------------
+# An anaconda-iso from bootc-image-builder installs the container that is
+# *embedded in the ISO*. The resulting deployment therefore points at that
+# embedded copy, not at the registry, and would never receive an update.
+#
+# The fix is one `bootc switch` in %post. Two flags make it correct here:
+#
+#   --mutate-in-place   Rewrite the deployment that is already on disk instead of
+#                       staging a new one and rebooting. Required inside the
+#                       Anaconda %post chroot, where there is nothing to reboot
+#                       into yet. Added in bootc commit f7b41cc, released in
+#                       bootc v1.12.0; the base image carries bootc 1.16.9, so
+#                       this is available and the old workaround — sed-ing the
+#                       ostree `.origin` file by hand — is NOT used here.
+#
+#   --enforce-container-sigpolicy
+#                       Write `ostree-image-signed:` rather than
+#                       `ostree-unverified-registry:`, so every subsequent
+#                       upgrade is signature-checked against
+#                       /etc/pki/containers/vespera.pub. That key and the
+#                       matching policy.json entry are installed by
+#                       build_files/85-signing.sh — without them this line fails
+#                       the install, which is the intended behaviour.
+#
+# Note there is deliberately no bootupd EFI-copy workaround here. That existed to
+# work around bootc-image-builder#1171 (missing /usr/lib/bootupd/updates), fixed
+# upstream once the builder picked up osbuild/images >= 0.231.0; the current
+# builder ships 0.251.0.
 
 [customizations.installer.modules]
-enable = [
-  "org.fedoraproject.Anaconda.Modules.Runtime",
-  "org.fedoraproject.Anaconda.Modules.Network",
-  "org.fedoraproject.Anaconda.Modules.Localization",
-  "org.fedoraproject.Anaconda.Modules.Timezone",
-  "org.fedoraproject.Anaconda.Modules.Storage",
-  "org.fedoraproject.Anaconda.Modules.Security",
-  "org.fedoraproject.Anaconda.Modules.Services",
-  "org.fedoraproject.Anaconda.Modules.Users"
-]
-
+# Trim the Anaconda spokes that make no sense for an image-based install.
 disable = [
   "org.fedoraproject.Anaconda.Modules.Subscription",
 ]
+
+[customizations.installer.kickstart]
+contents = """
+# Keyboard / language are still prompted for interactively; only the parts that
+# cannot be answered in the GUI are scripted.
+%post --erroronfail --log=/var/log/vespera-kickstart.log
+set -euo pipefail
+
+# Retarget the deployment from the ISO's embedded copy to the registry.
+bootc switch \
+  --mutate-in-place \
+  --enforce-container-sigpolicy \
+  --transport registry \
+  ghcr.io/abirkel/vespera:latest
+
+# Fail the install loudly if the switch did not take, rather than handing over a
+# machine that silently never updates. Checked against the deployment's origin
+# file (plain text on disk) rather than `bootc status`, which is less predictable
+# inside the Anaconda %post chroot.
+if ! grep -rq 'ghcr.io/abirkel/vespera' /ostree/deploy/*/deploy/*.origin; then
+  echo 'ERROR: bootc switch did not update the deployment origin' >&2
+  grep -rH . /ostree/deploy/*/deploy/*.origin >&2 || true
+  exit 1
+fi
+%end
+"""

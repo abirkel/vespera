@@ -1,3 +1,50 @@
+# bootc-image-builder config for the raw/qcow2 disk artifacts.
+#
+# Built with ghcr.io/osbuild/bootc-image-builder — NOT quay.io/centos-bootc/
+# bootc-image-builder, which is archived and last built against Fedora 42.
+#
+# The filesystem layout mirrors what Anaconda produces for Kinoite, so a disk
+# image and an ISO install end up with the same partitioning:
+#   * 1 GiB /boot  (ext4)  — bootc/ostree needs headroom for multiple deployments
+#   * XBOOTLDR/ESP handled by bootc-image-builder automatically
+#   * everything else btrfs, subvolume-less, so `bootc` and rpm-ostree behave
+#     exactly as on a stock install. The btrfs choice is NOT expressible here —
+#     bib takes it from its own --rootfs flag, set in the Justfile's `disk` recipe.
+
 [[customizations.filesystem]]
 mountpoint = "/"
 minsize = "20 GiB"
+
+[[customizations.filesystem]]
+mountpoint = "/boot"
+minsize = "1 GiB"
+
+[customizations.kernel]
+# Left empty on purpose: kernel arguments belong in the image, at
+# system_files/usr/lib/bootc/kargs.d/. Putting them here would mean a disk image
+# and an upgraded system disagree about their cmdline.
+append = ""
+
+# NO hostname here. bootc-image-builder silently ignores customizations.hostname for
+# bootc images: it emits no org.osbuild.hostname stage (verified in its generated
+# manifest, which does contain org.osbuild.users, so user customizations DO apply). The
+# disk booted as "fedora" with /etc/hostname absent. ublue's own bib configs set no
+# hostname either. Set it after install with `hostnamectl`; the Anaconda ISO prompts.
+
+# A first user, so the qcow2 is usable headlessly. Anaconda ISOs prompt instead,
+# which is why this block is only in disk.toml.
+#
+# ONLY `wheel` here, deliberately. bootc-image-builder creates this account with
+# `useradd --root`, which parses /etc/group directly and does not consult
+# /usr/lib/group. This build relocates image-provided accounts into /usr/lib/group
+# (correct for bootc: /etc is machine-local and 3-way merged), so libvirt, plugdev,
+# gamemode and usershares are invisible to useradd and listing them here fails the
+# build with "group 'libvirt' does not exist".
+#
+# Nothing is lost: system-setup.hooks.d/10-groups.sh copies those four out of
+# /usr/lib/group into /etc/group on first boot and then joins every wheel member to
+# them. wheel membership is the trigger, so granting wheel is sufficient.
+[[customizations.user]]
+name = "vespera"
+password = "vespera"          # change on first login; see README
+groups = ["wheel"]

@@ -1,319 +1,433 @@
-export image_name := env("IMAGE_NAME", "image-template") # output image name, usually same as repo name, change as needed
-export default_tag := env("DEFAULT_TAG", "latest")
-export bib_image := env("BIB_IMAGE", "quay.io/centos-bootc/bootc-image-builder:latest")
+# Vespera — developer entry points.
+#
+# The REPO justfile, run on a workstation. Unrelated to the in-image ujust recipes in
+# system_files/usr/share/ublue-os/just/60-custom.just.
+#
+# Kept compatible with just 1.21 (Ubuntu 24.04's, which is what CI installs from apt),
+# so no `[group(...)]` attributes — they need >= 1.27, and pinning a newer just in CI is
+# more supply-chain surface than a tidier `--list` is worth.
 
-alias build-vm := build-qcow2
-alias rebuild-vm := rebuild-qcow2
-alias run-vm := run-vm-qcow2
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+image_name  := env("IMAGE_NAME", "vespera")
+image_vendor := env("IMAGE_VENDOR", "abirkel")
+image_registry := env("IMAGE_REGISTRY", "ghcr.io/abirkel")
+default_tag := env("DEFAULT_TAG", "latest")
+bib_image := env("BIB_IMAGE", "ghcr.io/osbuild/bootc-image-builder:latest")
 
 [private]
 default:
-    @just --list
+    @just --list --unsorted
 
-# Check Just Syntax
-[group('Just')]
-check:
-    #!/usr/bin/bash
-    find . -type f -name "*.just" | while read -r file; do
-    	echo "Checking syntax: $file"
-    	just --unstable --fmt --check -f $file
-    done
-    echo "Checking syntax: Justfile"
-    just --unstable --fmt --check -f Justfile
+# ---------------------------------------------------------------------------
+# Static checks. The workflow runs `just check` first, so a syntax error costs seconds
+# instead of a 30-minute image build.
+# ---------------------------------------------------------------------------
 
-# Fix Just Syntax
-[group('Just')]
-fix:
-    #!/usr/bin/bash
-    find . -type f -name "*.just" | while read -r file; do
-    	echo "Checking syntax: $file"
-    	just --unstable --fmt -f $file
-    done
-    echo "Checking syntax: Justfile"
-    just --unstable --fmt -f Justfile || { exit 1; }
+# Run every static check (syntax, shell, yaml, json, structure)
+check: check-just check-sh check-yaml check-json check-layout
+    @echo "all checks passed"
 
-# Clean Repo
-[group('Utility')]
-clean:
-    #!/usr/bin/bash
-    set -eoux pipefail
-    touch _build
-    find *_build* -exec rm -rf {} \;
-    rm -f previous.manifest.json
-    rm -f changelog.md
-    rm -f output.env
-    rm -f output/
+# Validate this justfile and the in-image ujust recipes parse.
+# Parse-only: `--fmt --check` reflows the section-header comments this file relies on.
+check-just:
+    @just --justfile Justfile --summary >/dev/null && echo "Justfile parses"
+    @# 60-custom.just is imported, not standalone, so parse it behind a wrapper.
+    @tmp=$(mktemp -d); \
+      cp system_files/usr/share/ublue-os/just/60-custom.just "$tmp/60-custom.just"; \
+      printf 'import "60-custom.just"\n' > "$tmp/Justfile"; \
+      just --justfile "$tmp/Justfile" --summary >/dev/null; \
+      rm -rf "$tmp"; \
+      echo "60-custom.just parses"
 
-# Sudo Clean Repo
-[group('Utility')]
-[private]
-sudo-clean:
-    just sudoif just clean
-
-# sudoif bash function
-[group('Utility')]
-[private]
-sudoif command *args:
-    #!/usr/bin/bash
-    function sudoif(){
-        if [[ "${UID}" -eq 0 ]]; then
-            "$@"
-        elif [[ "$(command -v sudo)" && -n "${SSH_ASKPASS:-}" ]] && [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]]; then
-            /usr/bin/sudo --askpass "$@" || exit 1
-        elif [[ "$(command -v sudo)" ]]; then
-            /usr/bin/sudo "$@" || exit 1
-        else
-            exit 1
-        fi
-    }
-    sudoif {{ command }} {{ args }}
-
-# This Justfile recipe builds a container image using Podman.
-#
-# Arguments:
-#   $target_image - The tag you want to apply to the image (default: $image_name).
-#   $tag - The tag for the image (default: $default_tag).
-#
-# The script constructs the version string using the tag and the current date.
-# If the git working directory is clean, it also includes the short SHA of the current HEAD.
-#
-# just build $target_image $tag
-#
-# Example usage:
-#   just build aurora lts
-#
-# This will build an image 'aurora:lts' with DX and GDX enabled.
-#
-
-# Build the image using the specified parameters
-build $target_image=image_name $tag=default_tag:
+# shellcheck every build script and shipped shell file
+check-sh:
     #!/usr/bin/env bash
-
-    BUILD_ARGS=()
-    if [[ -z "$(git status -s)" ]]; then
-        BUILD_ARGS+=("--build-arg" "SHA_HEAD_SHORT=$(git rev-parse --short HEAD)")
-    fi
-
-    podman build \
-        "${BUILD_ARGS[@]}" \
-        --pull=newer \
-        --tag "${target_image}:${tag}" \
-        .
-
-# Command: _rootful_load_image
-# Description: This script checks if the current user is root or running under sudo. If not, it attempts to resolve the image tag using podman inspect.
-#              If the image is found, it loads it into rootful podman. If the image is not found, it pulls it from the repository.
-#
-# Parameters:
-#   $target_image - The name of the target image to be loaded or pulled.
-#   $tag - The tag of the target image to be loaded or pulled. Default is 'default_tag'.
-#
-# Example usage:
-#   _rootful_load_image my_image latest
-#
-# Steps:
-# 1. Check if the script is already running as root or under sudo.
-# 2. Check if target image is in the non-root podman container storage)
-# 3. If the image is found, load it into rootful podman using podman scp.
-# 4. If the image is not found, pull it from the remote repository into reootful podman.
-
-_rootful_load_image $target_image=image_name $tag=default_tag:
-    #!/usr/bin/bash
-    set -eoux pipefail
-
-    # Check if already running as root or under sudo
-    if [[ -n "${SUDO_USER:-}" || "${UID}" -eq "0" ]]; then
-        echo "Already root or running under sudo, no need to load image from user podman."
+    set -euo pipefail
+    if ! command -v shellcheck >/dev/null; then
+        echo "shellcheck not installed; skipping" >&2
         exit 0
     fi
+    # Discovered, not hardcoded: shipped scripts have no consistent extension
+    # (system-sleep hooks and libexec helpers have none), so match on the shebang.
+    mapfile -t files < <(
+        find build_files -name '*.sh'
+        find system_files -type f -exec grep -lE '^#!.*(bash|/bin/sh)' {} +
+    )
+    # -x: follow `source` into lib/common.sh
+    # SC1091: sourced paths only resolve inside the container
+    shellcheck -x -e SC1091 -S warning "${files[@]}"
+    echo "shellcheck clean (${#files[@]} files)"
 
-    # Try to resolve the image tag using podman inspect
-    set +e
-    resolved_tag=$(podman inspect -t image "${target_image}:${tag}" | jq -r '.[].RepoTags.[0]')
-    return_code=$?
-    set -e
-
-    USER_IMG_ID=$(podman images --filter reference="${target_image}:${tag}" --format "'{{ '{{.ID}}' }}'")
-
-    if [[ $return_code -eq 0 ]]; then
-        # If the image is found, load it into rootful podman
-        ID=$(just sudoif podman images --filter reference="${target_image}:${tag}" --format "'{{ '{{.ID}}' }}'")
-        if [[ "$ID" != "$USER_IMG_ID" ]]; then
-            # If the image ID is not found or different from user, copy the image from user podman to root podman
-            COPYTMP=$(mktemp -p "${PWD}" -d -t _build_podman_scp.XXXXXXXXXX)
-            just sudoif TMPDIR=${COPYTMP} podman image scp ${UID}@localhost::"${target_image}:${tag}" root@localhost::"${target_image}:${tag}"
-            rm -rf "${COPYTMP}"
-        fi
+# Validate the workflow YAML
+check-yaml:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if command -v yamllint >/dev/null; then
+        yamllint -d '{extends: default, rules: {line-length: {max: 100}, truthy: {check-keys: false}, comments: {min-spaces-from-content: 1}}}' \
+            .github/workflows/
+    elif python3 -c 'import yaml' 2>/dev/null; then
+        for f in .github/workflows/*.yml; do
+            python3 -c 'import sys,yaml; yaml.safe_load(open(sys.argv[1]))' "$f"
+            echo "parsed $f"
+        done
+    elif command -v npx >/dev/null; then
+        # `yaml`'s CLI reads from stdin and exits non-zero on a parse error.
+        for f in .github/workflows/*.yml; do
+            npx --yes yaml <"$f" >/dev/null
+            echo "parsed $f"
+        done
     else
-        # If the image is not found, pull it from the repository
-        just sudoif podman pull "${target_image}:${tag}"
+        # Deliberately loud. CI has yamllint preinstalled and takes the first branch, so a
+        # local run that silently skips can pass while CI fails — which is exactly what
+        # happened once with a 182-character line that only yamllint's line-length rule
+        # catches. Install yamllint locally to check what CI will actually check.
+        echo "WARNING: no YAML linter found. CI uses yamllint and checks line length," >&2
+        echo "         which the fallbacks above do NOT. Install yamllint to match CI." >&2
     fi
 
-# Build a bootc bootable image using Bootc Image Builder (BIB)
-# Converts a container image to a bootable image
-# Parameters:
-#   target_image: The name of the image to build (ex. localhost/fedora)
-#   tag: The tag of the image to build (ex. latest)
-#   type: The type of image to build (ex. qcow2, raw, iso)
-#   config: The configuration file to use for the build (default: disk_config/disk.toml)
+# Validate the renovate config and the bootc-image-builder TOMLs
+check-json:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # json5 needs a real parser; node is the only one commonly present.
+    if command -v npx >/dev/null; then
+        npx --yes json5 -c .github/renovate.json5 >/dev/null && echo "renovate.json5 parses"
+    else
+        echo "npx unavailable; skipping renovate.json5 parse" >&2
+    fi
+    if command -v python3 >/dev/null; then
+        python3 -c 'import glob,tomllib;[print("parsed",f) for f in sorted(glob.glob("disk_config/*.toml")) if tomllib.load(open(f,"rb")) is None or True]'
+    fi
 
-# Example: just _rebuild-bib localhost/fedora latest qcow2 disk_config/disk.toml
-_build-bib $target_image $tag $type $config: (_rootful_load_image target_image tag)
+# Assert repo invariants that are easy to break silently
+check-layout:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    fail=0
+    note() { echo "  FAIL: $*" >&2; fail=1; }
+
+    # build.sh's `bash $script` masks a missing +x locally, but git records it wrong.
+    while IFS= read -r f; do
+        [[ -x "$f" ]] || note "$f is not executable (git update-index --chmod=+x)"
+    done < <(find build_files -name '*.sh')
+
+    # The shipped ublue justfile is package-owned and hooked via the `import?` line it
+    # already has. Appending to it — Bazzite's and old vespera's approach — breaks on
+    # every ublue-os-just update. Match only *writes*, so the rpm -V guard and the parse
+    # check are not false positives.
+    if grep -rnE '(sed +-i|tee|>>?[[:space:]]*)[^|]*/usr/share/ublue-os/justfile' build_files/ \
+         | grep -vE 'rpm -V|--justfile' ; then
+        note "build_files/ writes to /usr/share/ublue-os/justfile — use 60-custom.just"
+    fi
+
+    # Branding must stay stock: nothing may ship an os-release or a distro logo.
+    while IFS= read -r f; do
+        note "branding file must not be shipped: $f"
+    done < <(find system_files \( -name 'os-release' -o -name 'kcm-about-distrorc' \) -o -path '*plymouth*' -type f)
+
+    # 85-signing.sh dies on a placeholder key; catch it here, not 20 minutes in.
+    if grep -qi placeholder cosign.pub; then
+        echo "  WARN: cosign.pub is still a placeholder; 'just build' will fail" >&2
+    fi
+
+    # kargs belong in the image, not in disk_config.
+    grep -q 'append = ""' disk_config/disk.toml \
+        || note "disk.toml sets kernel args; they belong in usr/lib/bootc/kargs.d"
+
+    # rsync -aK copies empty directories too.
+    while IFS= read -r d; do
+        note "empty directory in system_files (will be synced into the image): $d"
+    done < <(find system_files -type d -empty)
+
+    # Nothing may overwrite a package-owned Qt logging config; the override
+    # belongs in /etc/xdg/QtProject/ (see that file's header).
+    if [[ -e system_files/usr/share/qt5/qtlogging.ini || -e system_files/usr/share/qt6/qtlogging.ini ]]; then
+        note "system_files ships /usr/share/qt{5,6}/qtlogging.ini, which is owned by qt{5,6}-qtbase; use /etc/xdg/QtProject/qtlogging.ini"
+    fi
+
+    # Every shipped config must say where it came from, so a yearly audit knows what to
+    # diff against. See any file in system_files/ for the format.
+    while IFS= read -r f; do
+        grep -q 'PROVENANCE:' "$f" || note "no PROVENANCE header: $f"
+    done < <(find system_files -type f)
+
+    # Renovate refuses to run with more than one config file. Some editors auto-generate
+    # a minified renovate.json beside the .json5, so what matters is whether it is
+    # *committed*.
+    [[ -f .github/renovate.json5 ]] || note ".github/renovate.json5 is missing"
+    if git rev-parse --git-dir >/dev/null 2>&1; then
+        if git ls-files --error-unmatch .github/renovate.json >/dev/null 2>&1; then
+            note ".github/renovate.json is tracked; Renovate fails with two config files (it is .gitignore'd for a reason)"
+        fi
+    elif [[ -f .github/renovate.json ]]; then
+        echo "  WARN: .github/renovate.json exists (editor artifact); it is .gitignore'd" >&2
+    fi
+
+    (( fail == 0 )) && echo "layout ok"
+    exit $fail
+
+# ---------------------------------------------------------------------------
+# Build
+# ---------------------------------------------------------------------------
+
+# Build the image locally (podman). Slow; needs ~40 GB free.
+build tag=default_tag:
+    podman build \
+        --tag "{{ image_name }}:{{ tag }}" \
+        --build-arg "IMAGE_NAME={{ image_name }}" \
+        --build-arg "IMAGE_VENDOR={{ image_vendor }}" \
+        --build-arg "IMAGE_REGISTRY={{ image_registry }}" \
+        --build-arg "VERSION_TAG=local-$(date -u +%Y%m%d%H%M)" \
+        --file Containerfile \
+        .
+
+# Build without the slow optional extras (MS fonts, yeetmouse kmod)
+build-fast tag="fast":
+    podman build \
+        --tag "{{ image_name }}:{{ tag }}" \
+        --build-arg "IMAGE_NAME={{ image_name }}" \
+        --build-arg "IMAGE_VENDOR={{ image_vendor }}" \
+        --build-arg "IMAGE_REGISTRY={{ image_registry }}" \
+        --build-arg "ENABLE_MSFONTS=0" \
+        --build-arg "ENABLE_YEETMOUSE=0" \
+        --file Containerfile \
+        .
+
+# Rechunk a built image so updates download deltas instead of the whole thing.
+#
+# WHY IT MATTERS: the Containerfile does one big RUN on top of the base's ~259
+# well-chunked layers, so everything added — Steam, Wine (1.3 GiB alone), the virt
+# stack, fonts — lands in a SINGLE layer whose digest changes whenever any of it does.
+# A one-package update then re-downloads all of it. Rechunking re-splits the flattened
+# tree into per-package content-addressed layers, so only changed packages move.
+#
+# TOOL CHOICE: `rpm-ostree compose build-chunked-oci` — in-tree, already present in
+# the base image (rpm-ostree 2026.2, nothing to install), and what both Bazzite and
+# ublue's own image-template use.
+#
+# NOT coreos/chunkah, even though chunkah is by the same upstream (the coreos org),
+# is packaged in Fedora 44, and describes itself as "a generalized successor to
+# rpm-ostree's build-chunked-oci". The blocker is specific, and it is chunkah's own
+# README saying it: "chunkah has no special handling for bootable container images
+# ... Packing still needs to be fine-tuned for bootable images". Worse for us, our
+# base is the OSTree flavour of bootc image (it carries ostree.commit /
+# ostree.final-diffid / rpmostree.inputhash), and chunkah handles that only by
+# converting it to a "plain" image: `--prune /sysroot/`, strip the ostree labels,
+# re-add containers.bootc=1 by hand. That is a semantic change to the image, not a
+# repacking. Revisit when that caveat leaves chunkah's README.
+#
+# NOT hhd-dev/rechunk either: a third-party action needing rootful podman and a
+# pinned runner, for the same core benefit.
+#
+# The trick, from ublue's image-template: run rpm-ostree FROM THE IMAGE ITSELF with the
+# image mounted as a rootfs, so nothing extra is needed on the runner.
+#
+# LABELS ARE NOT INHERITED. Building from a bare rootfs regenerates the OCI config, so
+# every org.opencontainers.image.* label must be passed back in explicitly.
+rechunk tag=default_tag $max_layers="127":
     #!/usr/bin/env bash
     set -euo pipefail
 
-    args="--type ${type} "
-    args+="--use-librepo=True "
-    args+="--rootfs=btrfs"
+    img="localhost/{{ image_name }}:{{ tag }}"
+    podman image exists "$img" || { echo "no such image: $img (run 'just build' first)" >&2; exit 1; }
 
-    BUILDTMP=$(mktemp -p "${PWD}" -d -t _build-bib.XXXXXXXXXX)
+    # Preserve the labels the build set, so the rechunked image is not anonymous.
+    mapfile -t label_args < <(
+        podman inspect "$img" \
+          | jq -r '.[0].Config.Labels // {} | to_entries[] | "--label\n\(.key)=\(.value)"'
+    )
 
-    sudo podman run \
-      --rm \
-      -it \
-      --privileged \
-      --pull=newer \
-      --net=host \
-      --security-opt label=type:unconfined_t \
-      -v $(pwd)/${config}:/config.toml:ro \
-      -v $BUILDTMP:/output \
-      -v /var/lib/containers/storage:/var/lib/containers/storage \
-      "${bib_image}" \
-      ${args} \
-      "${target_image}:${tag}"
+    # Pins the layer PLAN against the last published image, so unchanged packages stay
+    # in identically-hashed layers instead of being reshuffled by the grouping
+    # algorithm. Without it, two builds of the same content can land on different
+    # boundaries and clients re-download everything anyway. Only the remote manifest is
+    # read — no pull. Skipped on a first build.
+    prev=()
+    prev_ref="docker://{{ image_registry }}/{{ image_name }}:latest"
+    if skopeo inspect --raw "$prev_ref" >/dev/null 2>&1; then
+        prev=(--previous-build "$prev_ref")
+        echo "basing layer plan on ${prev_ref}"
+    else
+        echo "no published image yet; letting rpm-ostree choose a fresh layer plan"
+    fi
+    # If the ref holds an image from a different base (the older hand-built vespera was
+    # layered on bazzite-nvidia-open), the first rechunk gains little. Self-corrects.
 
+    before=$(podman inspect "$img" | jq '.[0].RootFS.Layers | length')
+    # NOT mktemp's default. The intermediate oci-archive is about the size of the image
+    # (~15 GB), and on Fedora Atomic /tmp is a RAM-backed tmpfs roughly half of RAM — the
+    # write either hits ENOSPC or eats memory. output/ is disk-backed, gitignored, and
+    # already what `just clean` removes.
     mkdir -p output
-    sudo mv -f $BUILDTMP/* output/
-    sudo rmdir $BUILDTMP
-    sudo chown -R $USER:$USER output/
+    # Absolute: podman treats a relative --volume source as a NAMED VOLUME and fails.
+    out="$(mktemp -d -p "$PWD/output")"
+    trap 'rm -rf "$out"' EXIT
 
-# Podman builds the image from the Containerfile and creates a bootable image
-# Parameters:
-#   target_image: The name of the image to build (ex. localhost/fedora)
-#   tag: The tag of the image to build (ex. latest)
-#   type: The type of image to build (ex. qcow2, raw, iso)
-#   config: The configuration file to use for the build (deafult: disk_config/disk.toml)
+    # rpm-ostree runs INSIDE the image, so the image's own strict signing policy applies
+    # and --previous-build cannot read the published manifest, failing with
+    #   "A signature was required, but no signature exists"
+    # That bites on every unsigned previous image, including the first signed build (whose
+    # predecessor is unsigned by definition), and the workflow's continue-on-error would
+    # turn it into a silently unchunked image. Reading a layer PLAN is not a trust
+    # decision: the rootfs comes from --rootfs below, nothing from the remote image is
+    # unpacked or executed, and layer boundaries only affect download size. So this
+    # throwaway builder container gets a permissive policy; the SHIPPED
+    # /etc/containers/policy.json is untouched and stays strict.
+    printf '{"default":[{"type":"insecureAcceptAnything"}]}\n' >"$out/policy.json"
 
-# Example: just _rebuild-bib localhost/fedora latest qcow2 disk_config/disk.toml
-_rebuild-bib $target_image $tag $type $config: (build target_image tag) && (_build-bib target_image tag type config)
+    podman run --rm --privileged --pull=never \
+      --mount=type=image,src="$img",target=/rpm-ostree \
+      --volume "$out:/run/out:Z" \
+      --volume "$out/policy.json:/etc/containers/policy.json:ro" \
+      --entrypoint /usr/bin/rpm-ostree \
+      "$img" \
+      compose build-chunked-oci \
+        --bootc \
+        --format-version 2 \
+        --max-layers "$max_layers" \
+        "${prev[@]}" \
+        "${label_args[@]}" \
+        --rootfs /rpm-ostree \
+        --output oci-archive:/run/out/chunked.oci
 
-# Build a QCOW2 virtual machine image
-[group('Build Virtal Machine Image')]
-build-qcow2 $target_image=("localhost/" + image_name) $tag=default_tag: && (_build-bib target_image tag "qcow2" "disk_config/disk.toml")
+    new=$(podman pull "oci-archive:$out/chunked.oci")
+    podman tag "$new" "$img"
+    after=$(podman inspect "$img" | jq '.[0].RootFS.Layers | length')
+    echo "rechunked: ${before} layer(s) -> ${after} layer(s)"
 
-# Build a RAW virtual machine image
-[group('Build Virtal Machine Image')]
-build-raw $target_image=("localhost/" + image_name) $tag=default_tag: && (_build-bib target_image tag "raw" "disk_config/disk.toml")
-
-# Build an ISO virtual machine image
-[group('Build Virtal Machine Image')]
-build-iso $target_image=("localhost/" + image_name) $tag=default_tag: && (_build-bib target_image tag "iso" "disk_config/iso.toml")
-
-# Rebuild a QCOW2 virtual machine image
-[group('Build Virtal Machine Image')]
-rebuild-qcow2 $target_image=("localhost/" + image_name) $tag=default_tag: && (_rebuild-bib target_image tag "qcow2" "disk_config/disk.toml")
-
-# Rebuild a RAW virtual machine image
-[group('Build Virtal Machine Image')]
-rebuild-raw $target_image=("localhost/" + image_name) $tag=default_tag: && (_rebuild-bib target_image tag "raw" "disk_config/disk.toml")
-
-# Rebuild an ISO virtual machine image
-[group('Build Virtal Machine Image')]
-rebuild-iso $target_image=("localhost/" + image_name) $tag=default_tag: && (_rebuild-bib target_image tag "iso" "disk_config/iso.toml")
-
-# Run a virtual machine with the specified image type and configuration
-_run-vm $target_image $tag $type $config:
-    #!/usr/bin/bash
-    set -eoux pipefail
-
-    # Determine the image file based on the type
-    image_file="output/${type}/disk.${type}"
-    if [[ $type == iso ]]; then
-        image_file="output/bootiso/install.iso"
-    fi
-
-    # Build the image if it does not exist
-    if [[ ! -f "${image_file}" ]]; then
-        just "build-${type}" "$target_image" "$tag"
-    fi
-
-    # Determine an available port to use
-    port=8006
-    while grep -q :${port} <<< $(ss -tunalp); do
-        port=$(( port + 1 ))
-    done
-    echo "Using Port: ${port}"
-    echo "Connect to http://localhost:${port}"
-
-    # Set up the arguments for running the VM
-    run_args=()
-    run_args+=(--rm --privileged)
-    run_args+=(--pull=newer)
-    run_args+=(--publish "127.0.0.1:${port}:8006")
-    run_args+=(--env "CPU_CORES=4")
-    run_args+=(--env "RAM_SIZE=8G")
-    run_args+=(--env "DISK_SIZE=64G")
-    run_args+=(--env "TPM=Y")
-    run_args+=(--env "GPU=Y")
-    run_args+=(--device=/dev/kvm)
-    run_args+=(--volume "${PWD}/${image_file}":"/boot.${type}")
-    run_args+=(docker.io/qemux/qemu)
-
-    # Run the VM and open the browser to connect
-    (sleep 30 && xdg-open http://localhost:"$port") &
-    podman run "${run_args[@]}"
-
-# Run a virtual machine from a QCOW2 image
-[group('Run Virtal Machine')]
-run-vm-qcow2 $target_image=("localhost/" + image_name) $tag=default_tag: && (_run-vm target_image tag "qcow2" "disk_config/disk.toml")
-
-# Run a virtual machine from a RAW image
-[group('Run Virtal Machine')]
-run-vm-raw $target_image=("localhost/" + image_name) $tag=default_tag: && (_run-vm target_image tag "raw" "disk_config/disk.toml")
-
-# Run a virtual machine from an ISO
-[group('Run Virtal Machine')]
-run-vm-iso $target_image=("localhost/" + image_name) $tag=default_tag: && (_run-vm target_image tag "iso" "disk_config/iso.toml")
-
-# Run a virtual machine using systemd-vmspawn
-[group('Run Virtal Machine')]
-spawn-vm rebuild="0" type="qcow2" ram="6G":
+# Show the layer count — a single fat layer means every update re-downloads all of it
+layers tag=default_tag:
     #!/usr/bin/env bash
-
     set -euo pipefail
+    podman inspect "localhost/{{ image_name }}:{{ tag }}" \
+      | jq -r '.[0].RootFS.Layers | length as $n | "layers: \($n)"'
+    echo "(run 'just rechunk' to split it)"
 
-    [ "{{ rebuild }}" -eq 1 ] && echo "Rebuilding the ISO" && just build-vm {{ rebuild }} {{ type }}
+# Show what the build actually installed, as a sorted manifest
+manifest tag=default_tag:
+    podman run --rm "{{ image_name }}:{{ tag }}" \
+        rpm -qa --queryformat '%{NAME}\t%{VERSION}-%{RELEASE}\t%{VENDOR}\n' | sort
 
-    systemd-vmspawn \
-      -M "bootc-image" \
-      --console=gui \
-      --cpus=2 \
-      --ram=$(echo {{ ram }}| /usr/bin/numfmt --from=iec) \
-      --network-user-mode \
-      --vsock=false --pass-ssh-key=false \
-      -i ./output/**/*.{{ type }}
-
-
-# Runs shell check on all Bash scripts
-lint:
+# Diff the package set against the base image
+diff-base tag=default_tag:
     #!/usr/bin/env bash
-    set -eoux pipefail
-    # Check if shellcheck is installed
-    if ! command -v shellcheck &> /dev/null; then
-        echo "shellcheck could not be found. Please install it."
+    set -euo pipefail
+    base_image=$(grep -oP '^ARG BASE_IMAGE="\K[^"]+' Containerfile)
+    base_tag=$(grep -oP '^ARG BASE_TAG="\K[^"]+' Containerfile)
+    q='rpm -qa --queryformat %{NAME}\n'
+    diff <(podman run --rm "${base_image}:${base_tag}" $q | sort) \
+         <(podman run --rm "{{ image_name }}:{{ tag }}" $q | sort) \
+         || true
+
+# Open a shell in a built image to poke at it
+inspect tag=default_tag:
+    podman run --rm -it "{{ image_name }}:{{ tag }}" /bin/bash
+
+# ---------------------------------------------------------------------------
+# Disk artifacts
+# ---------------------------------------------------------------------------
+
+# Build a bootable artifact from a local image: iso | qcow2 | raw
+# The optional third argument overrides the bib config, for throwaway variants (a disk
+# with sshd enabled for scripted smoke-testing, say) without editing the real ones.
+disk target="qcow2" tag=default_tag config_override="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{ target }}" in
+      iso)   type=anaconda-iso; config=disk_config/iso-kde.toml ;;
+      qcow2) type=qcow2;        config=disk_config/disk.toml ;;
+      raw)   type=raw;          config=disk_config/disk.toml ;;
+      *) echo "target must be iso, qcow2 or raw" >&2; exit 1 ;;
+    esac
+    if [[ -n "{{ config_override }}" ]]; then
+      config="{{ config_override }}"
+      [[ -f "$config" ]] || { echo "no such config: $config" >&2; exit 1; }
+      echo "using config override: $config"
+    fi
+    mkdir -p output
+
+    # `just build` is ROOTLESS, so the image lands in the user graphroot. bootc-image-builder
+    # runs as root and reads root's storage, so the image has to be copied across first or
+    # bib fails with "image not found". ublue's image-template does this in
+    # _rootful_load_image, which its _build-bib recipe depends on.
+    #
+    # Compare image IDs rather than mere existence: after a rebuild root still holds the
+    # PREVIOUS image, and an `image exists` check would silently build a disk from it.
+    img="localhost/{{ image_name }}:{{ tag }}"
+    user_id="$(podman inspect "$img" | jq -r '.[0].Id')"
+    root_id="$(sudo podman inspect "$img" 2>/dev/null | jq -r '.[0].Id' || true)"
+    if [[ "$user_id" != "$root_id" ]]; then
+      echo "copying $img into root storage (bib reads it from there)"
+      # TMPDIR under output/: the intermediate is image-sized and /tmp is a RAM-backed
+      # tmpfs on Atomic. ublue redirects TMPDIR to $PWD for the same reason.
+      scptmp="$(mktemp -d -p output)"
+      sudo TMPDIR="$scptmp" podman image scp "${UID}@localhost::$img" "root@localhost::$img"
+      rm -rf "$scptmp"
+    fi
+
+    # --privileged: the builder needs loop devices and mount(2).
+    # --rootfs: REQUIRED. bib infers the root filesystem from /usr/lib/bootc/install/ in
+    #   the source image, and neither this image nor the ublue base ships that directory,
+    #   so bib aborts with "missing required info: DefaultRootFs". btrfs matches what
+    #   disk_config/disk.toml documents and what ublue's image-template passes.
+    # --local is not passed: bib now defaults to local storage and warns if it is given.
+    # --chown hands the output back inside this same privileged run. A trailing
+    #   `sudo chown -R ... output` used to do it, but bib takes long enough that sudo's
+    #   credential cache expires, so an unattended build failed on its very last line with
+    #   "sudo: timed out reading password" and left a root-owned qcow2 behind.
+    sudo podman run --rm -it --privileged \
+      --security-opt label=type:unconfined_t \
+      -v /var/lib/containers/storage:/var/lib/containers/storage \
+      -v "$PWD/output:/output" \
+      -v "$PWD/${config}:/config.toml:ro" \
+      "{{ bib_image }}" \
+      --type "${type}" --use-librepo=True --rootfs btrfs \
+      --chown "$(id -u):$(id -g)" \
+      "localhost/{{ image_name }}:{{ tag }}"
+    ls -lh output
+
+# Boot the qcow2 in QEMU to smoke-test it
+run-vm:
+    qemu-system-x86_64 \
+        -enable-kvm -M q35 -cpu host -smp 4 -m 8192 \
+        -bios /usr/share/edk2/ovmf/OVMF_CODE.fd \
+        -drive file=output/qcow2/disk.qcow2,if=virtio \
+        -display gtk
+
+# ---------------------------------------------------------------------------
+# Signing
+# ---------------------------------------------------------------------------
+
+# Generate a cosign keypair: commit cosign.pub, put cosign.key in SIGNING_SECRET
+gen-keys:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ -e cosign.key ]]; then
+        echo "cosign.key already exists here — refusing to overwrite" >&2
         exit 1
     fi
-    # Run shellcheck on all Bash scripts
-    /usr/bin/find . -iname "*.sh" -type f -exec shellcheck "{}" ';'
+    # Empty password: the key lives in a GitHub secret, not behind a prompt.
+    COSIGN_PASSWORD="" cosign generate-key-pair
+    echo
+    echo "Next:"
+    echo "  gh secret set SIGNING_SECRET < cosign.key"
+    echo "  git add cosign.pub && git commit -m 'chore: add signing public key'"
+    echo "  shred -u cosign.key      # .gitignore already excludes it"
 
-# Runs shfmt on all Bash scripts
-format:
-    #!/usr/bin/env bash
-    set -eoux pipefail
-    # Check if shfmt is installed
-    if ! command -v shfmt &> /dev/null; then
-        echo "shellcheck could not be found. Please install it."
-        exit 1
-    fi
-    # Run shfmt on all Bash scripts
-    /usr/bin/find . -iname "*.sh" -type f -exec shfmt --write "{}" ';'
+# Verify a published image against cosign.pub
+verify tag=default_tag:
+    cosign verify --key cosign.pub "{{ image_registry }}/{{ image_name }}:{{ tag }}"
+
+# ---------------------------------------------------------------------------
+# Housekeeping
+# ---------------------------------------------------------------------------
+
+# Format this justfile in place
+fmt:
+    just --unstable --fmt -f Justfile
+
+# Remove local build output and dangling podman layers
+clean:
+    rm -rf output
+    podman image prune -f

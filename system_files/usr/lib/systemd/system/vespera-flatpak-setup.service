@@ -1,0 +1,19 @@
+[Unit]
+# PROVENANCE: ours. Fedora ships flatpak's preinstall.d mechanism but no unit to
+#   invoke it. Deliberately not Bazzite's bazzite-flatpak-manager.service, which
+#   drives a bespoke installer instead of `flatpak preinstall`.
+Description=Mask unwanted Flatpaks, then install the image's default set
+Documentation=man:flatpak-preinstall(1)
+After=network-online.target flatpak-add-fedora-repos.service
+Wants=network-online.target
+ConditionPathIsDirectory=/usr/share/flatpak/preinstall.d
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/vespera-flatpak-setup
+# First boot pulls several GB; the default 90s timeout is far too short.
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=multi-user.target

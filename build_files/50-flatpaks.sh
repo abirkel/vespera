@@ -1,24 +1,30 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/bash
+# Flatpak configuration. The declarations live in
+# system_files/usr/share/flatpak/preinstall.d/ and are copied in by 60-system-config.sh;
+# this script only validates them. The unit is enabled in 70-services.sh.
+source "${CTX}/build_files/lib/common.sh"
 
-echo "=== Configuring Vespera Flatpaks ==="
+log "Validating Flatpak preinstall declarations"
 
-# Copy flatpak list to /etc/ublue-os/
-if [[ -f /ctx/flatpaks/vespera-flatpaks.list ]]; then
-    echo "Installing Vespera flatpak list..."
-    install -Dm0644 /ctx/flatpaks/vespera-flatpaks.list /etc/ublue-os/vespera-flatpaks.list
-else
-    echo "Warning: vespera-flatpaks.list not found!"
-fi
+shopt -s nullglob
+files=( "${SYSTEM_FILES}"/usr/share/flatpak/preinstall.d/*.preinstall )
+shopt -u nullglob
+(( ${#files[@]} )) || die "no *.preinstall files found in system_files"
 
-# Make vespera-flatpak-manager executable
-chmod +x /usr/libexec/vespera-flatpak-manager
+# Every stanza header must be well formed and declare a Branch. A typo here would
+# otherwise only surface as a silent no-op on first boot.
+for f in "${files[@]}"; do
+    n_hdr=$(grep -c '^\[Flatpak Preinstall [A-Za-z0-9._-]\+\]$' "$f" || true)
+    n_br=$(grep -c '^Branch=' "$f" || true)
+    (( n_hdr > 0 )) || die "$(basename "$f"): no valid [Flatpak Preinstall <ref>] stanzas"
+    (( n_hdr == n_br )) || die "$(basename "$f"): ${n_hdr} stanzas but ${n_br} Branch= lines"
+    info "$(basename "$f"): ${n_hdr} refs"
+done
 
-# Make flatpak user hook executable
-chmod +x /usr/share/ublue-os/user-setup.hooks.d/40-flatpak.sh
+# Flathub is already configured by the base (kinoite-main ships the .flatpakrepo and
+# enables it via flatpak-add-fedora-repos.service, with the Fedora remotes disabled).
+# Asserted so a base change is caught loudly.
+[[ -f /etc/flatpak/remotes.d/flathub.flatpakrepo ]] \
+    || die "base no longer ships the Flathub remote definition"
 
-# Enable vespera-flatpak-manager service
-echo "Enabling vespera-flatpak-manager.service..."
-systemctl enable vespera-flatpak-manager.service
-
-echo "=== Flatpak configuration complete ==="
+info "Flathub remote definition present; unit enabled in 70-services.sh"

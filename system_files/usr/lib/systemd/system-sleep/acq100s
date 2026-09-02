@@ -1,27 +1,44 @@
 #!/bin/sh
+# PROVENANCE: vespera. Hardware-specific to this machine; Bazzite has no equivalent.
 #
-# ACQ100S suspend/resume workaround
+# The Aquantia AQC100S 10GbE NIC comes back from suspend with the atlantic driver in a
+# wedged state, so the module is unloaded before sleep and reloaded after.
 #
-# /usr/lib/systemd/system-sleep/acq100s
-# Set ownership to root and permissions to 755
-# 
-
-DEVICE="0000:09:00.0"
+# STILL REQUIRED as of January 2026 — confirmed on this hardware. Recording that
+# explicitly because the upstream history reads as though it should be fixed:
+#
+#   4d88c339c423  2021-09-23  fix resume when the device was down
+#   1809c30b6e5a  2022-05-10  always deep reset on pm op (null-deref regression fix)
+#   2e15c51fefaf  2022-07-14  remove aq_nic_deinit() on resume — calling it twice
+#                             "leads to another hang issue when resuming from S3"
+#   0f3325076038  2022-07-14  drop the now-redundant deep parameter
+#   2c308cf34284  2026-05-12  preserve PCI wake-from-D3 on shutdown when WOL enabled
+#
+# So the 2022 S3 hang was fixed in kernel 5.19 and this image runs 7.1.10 — but the
+# device still misbehaves, which means whatever remains is a different fault from the one
+# those commits closed. The 2026 commit shows the driver is still receiving PM fixes.
+# Do not remove this on the strength of the changelog alone.
+#
+# KNOWN COST: unloading the module tears down the wake-on-LAN configuration, so WOL from
+# suspend cannot work while this is in place. A working link after resume is the more
+# important of the two here.
+#
+# Guarded so it is a no-op on hardware without the NIC. A stamp in /run carries the
+# decision from pre to post, because by then the module is gone and cannot be probed.
 MODULE="atlantic"
+STAMP="/run/acq100s-unloaded"
 
 case "$1" in
     pre)
-        echo "ACQ100S-Fix: [PRE] Unloading $MODULE module"
-        # Unload the module before suspend
-        modprobe -r "$MODULE" 2>/dev/null
+        [ -d "/sys/module/${MODULE}" ] || exit 0
+        if modprobe -r "${MODULE}" 2>/dev/null; then
+            : >"${STAMP}"
+        fi
         ;;
     post)
-        echo "ACQ100S-Fix: [POST] Reloading $MODULE module"
-        # Reload the module after resume
-        modprobe "$MODULE" 2>/dev/null
-        # echo 1 > /sys/bus/pci/devices/$DEVICE/remove
-        # echo 1 > /sys/bus/pci/rescan  
+        [ -e "${STAMP}" ] || exit 0
+        rm -f "${STAMP}"
+        modprobe "${MODULE}" 2>/dev/null || true
         ;;
 esac
-
 exit 0

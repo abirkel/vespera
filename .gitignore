@@ -1,7 +1,31 @@
+# Signing: the PRIVATE key must never be committed. It belongs in the
+# SIGNING_SECRET repository secret. cosign.pub IS committed on purpose — it is
+# baked into the image so the installed system can verify its own upgrades.
 cosign.key
-_build_*
-output
-_build-*/**
+*.key
+!cosign.pub
 
-# Exploration and reference files
-.temp/
+# Renovate config: renovate.json5 is the source of truth (it carries the
+# comments explaining each rule). Some editors/JSON-schema tooling auto-generate
+# a minified .github/renovate.json alongside it. Renovate REFUSES to run when it
+# finds more than one config file, so that artifact must never be committed.
+.github/renovate.json
+
+# bootc-image-builder output
+/output/
+
+# Local build scratch
+*.qcow2
+*.raw
+*.iso
+*.sha256
+
+# Editors / OS
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# Private bare-metal test checklist. Local only, never committed.
+notes.md

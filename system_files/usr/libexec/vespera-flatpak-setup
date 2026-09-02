@@ -1,0 +1,32 @@
+#!/usr/bin/bash
+# PROVENANCE: ours, replacing Bazzite's bazzite-flatpak-manager +
+#   /usr/share/ublue-os/flatpak-blocklist pair.
+#
+# Two deliberate differences:
+#   1. Installs via upstream `flatpak preinstall`, not a hand-rolled loop.
+#   2. Blocks via `flatpak --system mask`, which flatpak enforces on both install and
+#      update. Bazzite's flatpak-blocklist is only read by its own installer, so it
+#      does not stop Discover or a dependency pulling the ref.
+#
+# Runs at boot rather than build time because the mask lives in /var/lib/flatpak —
+# machine state, not image content.
+set -euo pipefail
+
+# Steam is installed natively; Lutris is excluded. Masking prevents a confusing
+# second copy arriving via Discover or as a dependency.
+MASK=(
+    com.valvesoftware.Steam
+    net.lutris.Lutris
+)
+
+echo "Masking: ${MASK[*]}"
+for ref in "${MASK[@]}"; do
+    flatpak --system mask "${ref}" || echo "  warning: could not mask ${ref}"
+done
+
+echo "Running flatpak preinstall"
+# Non-fatal: one unavailable ref (e.g. a Vulkan layer whose runtime branch moved)
+# must not block the rest or fail the boot.
+if ! flatpak preinstall -y --noninteractive; then
+    echo "warning: flatpak preinstall reported errors"
+fi
