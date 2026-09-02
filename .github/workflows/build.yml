@@ -175,7 +175,20 @@ jobs:
 
       - name: Build image
         id: build
-        uses: redhat-actions/buildah-build@7a95fa7ee0f02d552a32753e7414641a04307056 # v2.13
+        # v3, and the version matters enormously for build time. v2.13 unconditionally
+        # exported a storage mount_program of fuse-overlayfs, so every buildah and podman
+        # write in this job went through userspace FUSE. Measured against the old
+        # bazzite-based pipeline, which is already on v3: our COMMIT took 2380s versus 7s,
+        # and `bootc container lint` 664s versus 9s — both being full-tree walks. v3.1.0
+        # detects rootless native overlayfs (kernel 5.11+) and skips the override, logging
+        # "Kernel supports rootless native overlayfs, skipping fuse-overlayfs override".
+        # Its release notes cite both the performance regression and silent data corruption
+        # on ubuntu-24.04 runners.
+        #
+        # v3.0.0 also changed `squash` to default true. Harmless here: buildah's --squash
+        # only collapses the layers this build ADDS (base layers are untouched), this
+        # Containerfile has just two RUNs, and the image is rechunked afterwards anyway.
+        uses: redhat-actions/buildah-build@719e3c40d8af9790c23eca13f7daa339f2867034 # v3.1.0
         with:
           containerfiles: ./Containerfile
           image: ${{ env.IMAGE_NAME }}
@@ -255,7 +268,7 @@ jobs:
       - name: Push to GHCR
         if: github.event_name != 'pull_request'
         id: push
-        uses: redhat-actions/push-to-registry@5ed88d269cf581ea9ef6dd6806d01562096bee9c # v2.8
+        uses: redhat-actions/push-to-registry@94ade333c38ecc0e60e94785125d9a52ca423b37 # v3.0.0
         with:
           image: ${{ steps.build.outputs.image }}
           tags: ${{ steps.build.outputs.tags }}
