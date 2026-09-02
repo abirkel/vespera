@@ -68,12 +68,16 @@ EOF
 # ---------------------------------------------------------------------------
 # yeetmouse — raw mouse-input accel driver, from the abirkel-stable repo.
 #
-# FRAGILE, verified: the kmod package name embeds the kernel version and Provides
-# `kernel-modules-for-kernel = <exact kver>`. abirkel-stable publishes builds for
-# 7.1.4 through 7.1.9 plus ogc, but not 7.1.10-200.fc44, which the base ships today.
+# FATAL if it cannot be installed. The kmod package name embeds the exact kernel version
+# and Provides `kernel-modules-for-kernel = <exact kver>`, so it only resolves when
+# abirkel-stable has a build for the kernel this base ships. Shipping an image where the
+# mouse driver is silently absent is not acceptable, so the build stops instead.
 #
-# So a SOFT failure: the image still builds and warns. ENABLE_YEETMOUSE=0 skips it
-# entirely; flip the `warn` to `die` to block until the repo catches up.
+# CONSEQUENCE, and the reason the schedule in build.yml is 07:00 rather than 05:20:
+# abirkel/yeetmouse-rpm builds kmods for the current ublue kernel at 06:00 UTC. Any run
+# that starts before that on a day the kernel moved will find no matching kmod and now
+# fails. Re-dispatch after yeetmouse-rpm has published, or set ENABLE_YEETMOUSE=0 for a
+# local build that deliberately does without it.
 # ---------------------------------------------------------------------------
 if [[ "${ENABLE_YEETMOUSE:-1}" != "1" ]]; then
     info "yeetmouse: disabled by ENABLE_YEETMOUSE=0"
@@ -86,12 +90,17 @@ else
             "kmod-yeetmouse-${KVER}" yeetmouse; then
         info "yeetmouse installed for ${KVER}"
     else
-        warn "yeetmouse: no kmod build for ${KVER} in abirkel-stable — SKIPPED."
-        warn "  Rebuild against ${KVER} and re-run."
-        info "  Available builds:"
+        # Print the diagnostic BEFORE dying, so the log says which kernels are available
+        # rather than just that this one is not.
+        printf '\n' >&2
+        printf 'kmod-yeetmouse builds present in abirkel-stable:\n' >&2
         dnf5 repoquery --disablerepo='*' --enablerepo='abirkel-stable' \
             --qf '    %{name}\n' 'kmod-yeetmouse*' 2>/dev/null \
-            | grep -v '\.src' | sort -u || true
+            | grep -v '\.src' | sort -u >&2 || true
+        printf '\n' >&2
+        die "no kmod-yeetmouse build for ${KVER} in abirkel-stable.
+  Build one there (its check-release workflow runs 06:00 UTC daily, or dispatch it
+  manually), then re-run this build. ENABLE_YEETMOUSE=0 skips yeetmouse entirely."
     fi
 
     dnf5 -y config-manager setopt 'abirkel-stable'.enabled=0

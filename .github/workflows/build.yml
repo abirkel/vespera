@@ -8,10 +8,17 @@ on:
     branches: [main]
     paths-ignore: ['**.md', 'LICENSE', 'docs/**']
   schedule:
-    # 05:20 UTC daily. The base image is rebuilt daily by ublue, and Renovate
-    # bumps the digest pin, but a scheduled build also picks up new Fedora
-    # updates in the layers we add on top.
-    - cron: '20 5 * * *'
+    # 07:00 UTC daily. The base image is rebuilt daily by ublue, and Renovate bumps the
+    # digest pin, but a scheduled build also picks up new Fedora updates in the layers
+    # added on top.
+    #
+    # NOT EARLIER: 30-kmods.sh treats a missing kmod-yeetmouse as fatal, and the kmod for
+    # a newly bumped kernel only exists once abirkel/yeetmouse-rpm has built it — its
+    # check-release workflow runs at 06:00 UTC and takes a few minutes, including the
+    # downstream sign-and-publish in abirkel/rpm-repo and the Pages deploy. This used to
+    # be 05:20, i.e. 40 minutes BEFORE the kmod it depends on could exist, which would
+    # have failed every build on a kernel-bump day.
+    - cron: '0 7 * * *'
   workflow_dispatch:
 
 env:
@@ -139,23 +146,32 @@ jobs:
           # — curl exits 22 on the 404, so v3.9.2 simply cannot install any cosign 3.x.
           cosign-release: v3.1.2
 
-      - name: Verify base image signature
+      - name: Verify upstream image signatures
         run: |
           set -euo pipefail
-          BASE="$(grep -oP '^ARG BASE_IMAGE="\K[^"]+' Containerfile)"
-          TAG="$(grep -oP '^ARG BASE_TAG="\K[^"]+' Containerfile)"
-          # pinDigests writes the digest into BASE_TAG, giving "latest@sha256:...".
-          # Verify by digest alone then: a ref with both a tag and a digest is not
-          # universally accepted.
-          if [[ "${TAG}" == *@* ]]; then
-            REF="${BASE}@${TAG#*@}"
-          else
-            REF="${BASE}:${TAG}"
-          fi
-          echo "Verifying ${REF}"
-          cosign verify \
-            --key https://raw.githubusercontent.com/ublue-os/main/main/cosign.pub \
-            "${REF}"
+          verify_arg() {
+            local image_arg="$1" tag_arg="$2" image tag ref
+            image="$(grep -oP "^ARG ${image_arg}=\"\\K[^\"]+" Containerfile)"
+            tag="$(grep -oP "^ARG ${tag_arg}=\"\\K[^\"]+" Containerfile)"
+            # pinDigests writes the digest into the tag ARG, giving "latest@sha256:...".
+            # Verify by digest alone then: a ref carrying both a tag and a digest is not
+            # universally accepted.
+            if [[ "${tag}" == *@* ]]; then ref="${image}@${tag#*@}"; else ref="${image}:${tag}"; fi
+            echo "Verifying ${ref}"
+            cosign verify \
+              --key https://raw.githubusercontent.com/ublue-os/main/main/cosign.pub \
+              "${ref}"
+          }
+
+          verify_arg BASE_IMAGE BASE_TAG
+
+          # akmods MUST be verified too, not just the base. Its RPMs are bind-mounted and
+          # installed from /tmp/akmods-rpms, i.e. as @commandline, so dnf reports
+          # "skipped OpenPGP checks" for them — the RPM headers are signed but nothing
+          # checks them. That makes this image signature the only thing vouching for
+          # kernel modules that then load into the running kernel. Verified that ublue
+          # signs it with the same key as the base.
+          verify_arg AKMODS_IMAGE AKMODS_TAG
 
       - name: Build image
         id: build
