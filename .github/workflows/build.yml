@@ -37,6 +37,9 @@ jobs:
   build:
     name: Build and push
     runs-on: ubuntu-24.04
+    outputs:
+      changed: ${{ steps.changed.outputs.changed }}
+      version: ${{ steps.version.outputs.version }}
     permissions:
       contents: read
       packages: write
@@ -91,7 +94,20 @@ jobs:
             echo "could not determine Fedora major from base label '${BASE_VERSION}'" >&2
             exit 1
           fi
-          VERSION="${FEDORA_MAJOR}.$(date -u +%Y%m%d).${{ github.run_attempt }}"
+          # The dated tag is the anchor the changelog diffs against, so it MUST be unique.
+          # github.run_attempt is 1 for every NEW run and only increments when the same run
+          # is retried, so two publishes on one day (a push plus the 07:00 schedule) both
+          # produced .1 and the second silently overwrote the first, destroying the older
+          # image the changelog needs to compare against. Take the next free index for
+          # today from the registry instead. Bazzite solves the same problem with a
+          # "relabel" step that suffixes .1, .2 on collision.
+          DATE="$(date -u +%Y%m%d)"
+          PREFIX="${FEDORA_MAJOR}.${DATE}"
+          HIGHEST="$(skopeo list-tags "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}" 2>/dev/null \
+                     | jq -r --arg p "${PREFIX}." \
+                         '.Tags[]? | select(startswith($p)) | ltrimstr($p)' \
+                     | grep -xE '[0-9]+' | sort -n | tail -1 || true)"
+          VERSION="${PREFIX}.$(( ${HIGHEST:-0} + 1 ))"
           echo "fedora_major=${FEDORA_MAJOR}" >>"$GITHUB_OUTPUT"
           echo "version=${VERSION}" >>"$GITHUB_OUTPUT"
           echo "Base ${REF} is Fedora ${FEDORA_MAJOR}; building version ${VERSION}"
@@ -198,11 +214,17 @@ jobs:
             IMAGE_VENDOR=${{ github.repository_owner }}
             IMAGE_REGISTRY=${{ env.IMAGE_REGISTRY }}
             VERSION_TAG=${{ steps.version.outputs.version }}
+          # image.revision is what makes the changelog's commit table possible: it turns a
+          # pair of published images into `git log <prev-revision>..<curr-revision>`, the
+          # same mechanism ublue uses. Without it that section is silently empty.
+          # NOTE: no comments inside the block scalars below - every line there is passed
+          # through verbatim as a literal label or build-arg.
           labels: |
             org.opencontainers.image.title=${{ env.IMAGE_NAME }}
             org.opencontainers.image.description=${{ env.IMAGE_DESC }}
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.created=${{ github.event.repository.updated_at }}
             org.opencontainers.image.licenses=Apache-2.0
             containers.bootc=1
@@ -250,17 +272,54 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           TAGS: ${{ steps.tags.outputs.tags }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           read -r -a tag_list <<<"${TAGS}"
           FIRST="${tag_list[0]}"
 
-          # --entrypoint is required: this image's CMD is /sbin/init.
-          NEW="$(podman run --rm --entrypoint /usr/bin/bash \
-                   "localhost/${IMAGE_NAME}:${FIRST}" \
-                   -c "rpm -qa --qf '%{NEVRA}\n' | sort | sha256sum" | cut -d' ' -f1)"
+          # ONE container invocation serves both consumers: this gate needs a hash of the
+          # package set, and the changelog needs the set itself. --entrypoint is required
+          # because this image's CMD is /sbin/init.
+          #
+          # %{SOURCERPM} is the field that lets the changelog group subpackages EXACTLY -
+          # kernel-modules and kernel-devel come from one source build - instead of
+          # inferring it from matching version strings the way ublue's script does. Theirs
+          # collapses on version alone, which on a real bazzite release silently hid five
+          # genuine source-package updates, including one where an UNCHANGED package
+          # (qt6-filesystem) suppressed a changed one (qt6-srpm-macros) that happened to
+          # share its old version.
+          podman run --rm --entrypoint /usr/bin/bash \
+            "localhost/${IMAGE_NAME}:${FIRST}" \
+            -c 'rpm -qa --qf "%{NAME}\t%{EPOCH}\t%{VERSION}-%{RELEASE}\t%{SOURCERPM}\t%{NEVRA}\n"' \
+            >pkgs.tsv
+          echo "packages in image: $(wc -l <pkgs.tsv)"
+
+          NEW="$(cut -f5 pkgs.tsv | LC_ALL=C sort | sha256sum | cut -d' ' -f1)"
           echo "built image package fingerprint: ${NEW}"
           echo "fingerprint=${NEW}" >>"$GITHUB_OUTPUT"
+
+          # A syft-json-compatible subset: syft names these fields identically, so the
+          # ublue parsing helpers work on it unchanged.
+          python3 - "${VERSION}" >packages.json <<'PY'
+          import json, sys
+          arts = []
+          for line in open("pkgs.tsv"):
+              f = line.rstrip("\n").split("\t")
+              if len(f) < 5:
+                  continue
+              name, epoch, vr, srpm = f[0], f[1], f[2], f[3]
+              arts.append({
+                  "name": name,
+                  "version": vr if epoch in ("(none)", "") else f"{epoch}:{vr}",
+                  "type": "rpm",
+                  "metadata": {"sourceRpm": srpm},
+              })
+          arts.sort(key=lambda a: (a["name"], a["version"]))
+          json.dump({"source": {"name": "vespera", "version": sys.argv[1]},
+                     "artifacts": arts}, sys.stdout)
+          PY
+          echo "manifest bytes: $(stat -c%s packages.json)"
 
           if [[ "${EVENT_NAME}" != "schedule" ]]; then
             echo "changed=true" >>"$GITHUB_OUTPUT"
@@ -270,7 +329,8 @@ jobs:
 
           # Scheduled runs only ever happen on the default branch, so the tag to compare
           # against is always DEFAULT_TAG.
-          OLD="$(skopeo inspect "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}" 2>/dev/null \
+          REF="docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}"
+          OLD="$(skopeo inspect "${REF}" 2>/dev/null \
                  | jq -r '.Labels["dev.vespera.pkg-fingerprint"] // ""' || true)"
           echo "published fingerprint: ${OLD:-<none>}"
 
@@ -284,7 +344,9 @@ jobs:
             echo "::notice title=Publishing::Package set changed since the published image."
           else
             echo "changed=false" >>"$GITHUB_OUTPUT"
-            echo "::notice title=No changes::Package set identical to the published image; skipping rechunk, push and sign. Nothing for installed machines to download."
+            MSG="Package set identical to the published image; skipping rechunk, push"
+            MSG="${MSG} and sign. Nothing for installed machines to download."
+            echo "::notice title=No changes::${MSG}"
           fi
 
       # Rechunk before pushing so updates ship deltas, not the whole image.
@@ -376,6 +438,41 @@ jobs:
             --key env://COSIGN_PRIVATE_KEY \
             "${IMAGE_REGISTRY}/${IMAGE_NAME}@${DIGEST}"
 
+      # Attach the package manifest to the pushed image as an OCI referrer so the next
+      # build can diff against it without pulling the whole image. Same mechanism ublue
+      # uses for its SBOM, but the payload is a ~200 KB package list instead of a 190 MB
+      # syft scan: bazzite:stable's SBOM measures 198,515,288 bytes because syft hashes
+      # every file in the image, while the only fields a changelog reads are name, version
+      # and sourceRpm. It also avoids syft's cost entirely - they must `podman export` the
+      # whole rootfs and untar it before scanning.
+      #
+      # Verified against a local registry using cosign v3.1.2, the version this pipeline
+      # pins: signing, then attaching a referrer of this artifactType, leaves
+      # `cosign verify --key` passing. So this does not repeat the referrers-fallback
+      # breakage that attest-build-provenance's push-to-registry: true caused, where a
+      # keyless sigstore bundle in the fallback index made cosign refuse the whole
+      # verification with "expected key signature, not certificate".
+      - name: Install ORAS
+        if: github.event_name != 'pull_request' && steps.changed.outputs.changed == 'true'
+        uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
+
+      - name: Attach package manifest
+        if: github.event_name != 'pull_request' && steps.changed.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # oras keeps its own credential store, so podman-login above does not cover it.
+          printf '%s' "${GH_TOKEN}" \
+            | oras login "${IMAGE_REGISTRY%%/*}" -u "${ACTOR}" --password-stdin
+          oras attach \
+            --artifact-type application/vnd.vespera.packages.v1+json \
+            --annotation filename=packages.json \
+            "${IMAGE_REGISTRY}/${IMAGE_NAME}@${DIGEST}" \
+            packages.json:application/json
+
       - name: Attest provenance
         if: github.event_name != 'pull_request' && steps.changed.outputs.changed == 'true'
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
@@ -398,3 +495,69 @@ jobs:
           # registry copy is dropped. ublue's image-template attaches no attestation at
           # all, so it never hit this.
           push-to-registry: false
+
+
+  # Per-release package changelog, published as a GitHub Release. Separate job because it
+  # needs `contents: write` and a deep checkout, neither of which the build job should
+  # hold. ublue does the same thing in a separate generate_release workflow.
+  release:
+    name: Generate release
+    needs: build
+    # Three conditions, all necessary. Not on pull requests, because nothing is published.
+    # Only when the no-op gate actually published, otherwise a skipped day would produce an
+    # empty release for an image that never moved. And only on the default branch, because
+    # a branch build publishes just its branch tag - no dated tag exists to diff against.
+    if: >-
+      github.event_name != 'pull_request'
+      && needs.build.outputs.changed == 'true'
+      && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      # Reading the attached manifest works anonymously while the package is public, but
+      # relying on that would break silently the moment it is not.
+      packages: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          # The commit table is `git log <prev-revision>..<curr-revision>`, so both
+          # revisions must be in this clone. ublue uses 500 for the same reason; the
+          # default depth of 1 would make that section silently empty.
+          fetch-depth: 500
+
+      - name: Install ORAS
+        uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
+
+      - name: Log in to GHCR with ORAS
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${GH_TOKEN}" \
+            | oras login "${IMAGE_REGISTRY%%/*}" -u "${ACTOR}" --password-stdin
+
+      - name: Generate release notes
+        id: notes
+        env:
+          # IMAGE_REGISTRY and IMAGE_NAME come from the workflow-level env, which every job
+          # inherits; the script reads both from the environment.
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 .github/changelog.py "${VERSION}" ./output.env ./changelog.md --workdir .
+          # TITLE and TAG come back through a file rather than stdout so the script can
+          # print the whole body to the log without polluting the outputs.
+          source ./output.env
+          echo "title=${TITLE}" >>"$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >>"$GITHUB_OUTPUT"
+
+      - name: Create release
+        uses: softprops/action-gh-release@5113cdc90fd4d541c801c55356214017bf5ae34b # v3
+        with:
+          name: ${{ steps.notes.outputs.title }}
+          tag_name: ${{ steps.notes.outputs.tag }}
+          body_path: ./changelog.md
+          make_latest: true

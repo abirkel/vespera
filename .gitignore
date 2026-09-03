@@ -27,5 +27,10 @@ cosign.key
 .idea/
 .vscode/
 
+# Python bytecode. .github/changelog.py is run directly by the release job, but any
+# local syntax check or import leaves a __pycache__ behind.
+__pycache__/
+*.py[cod]
+
 # Private bare-metal test checklist. Local only, never committed.
 notes.md
