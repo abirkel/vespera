@@ -215,6 +215,78 @@ jobs:
           echo "Check the '99-cleanup.sh' and 'BUILD COMPLETED WITH WARNINGS'"
           echo "sections of the build log above for soft failures."
 
+      # Publish only when the image's CONTENT actually changed.
+      #
+      # ublue rebuilds the base daily, but the rebuild is frequently a no-op: across eight
+      # consecutive kinoite-nvidia builds there were only five distinct rpmostree.inputhash
+      # values, so 3 of 7 day-to-day transitions carried no package change at all. Their
+      # digest and ostree.commit still move every day, so comparing those would never skip.
+      #
+      # Publishing a no-op is not free for the machines that track this tag: a new digest
+      # makes bootc/uupd stage a fresh deployment and ask for a reboot to apply nothing.
+      # So the gate is here, AFTER the build, comparing the real resolved package set of
+      # the image just built against the one recorded on the published tag.
+      #
+      # One fingerprint covers both halves of the question — "did the base change?" and
+      # "did any package we add change?" — because rpm -qa lists the base's kernel,
+      # systemd and KDE alongside our wine, steam, Terra and COPR packages.
+      #
+      # Flatpaks are correctly absent from it: only preinstall.d DECLARATIONS ship in the
+      # image, and the apps themselves are pulled on the desktop at first boot and updated
+      # thereafter by flatpak-system-update.timer, so they can never churn the image.
+      #
+      # SCHEDULE ONLY. A push can change file content (system_files, hooks, kargs) without
+      # changing a single NEVRA, so pushes must always publish. On a scheduled run the repo
+      # is byte-identical to the last build, which is exactly why a package fingerprint is
+      # sufficient there.
+      #
+      # Blind spots, both accepted: the Microsoft core fonts are fetched .cab files
+      # extracted with cabextract, so they carry no NEVRA at all, and cicpoffs comes from a
+      # rolling `master` release whose asset is replaced in place, so its NEVRA can stay
+      # cicpoffs-0.3-1.fc44 while the binary changes. Any push or manual dispatch covers
+      # both.
+      - name: Decide whether the image changed
+        id: changed
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TAGS: ${{ steps.tags.outputs.tags }}
+        run: |
+          set -euo pipefail
+          read -r -a tag_list <<<"${TAGS}"
+          FIRST="${tag_list[0]}"
+
+          # --entrypoint is required: this image's CMD is /sbin/init.
+          NEW="$(podman run --rm --entrypoint /usr/bin/bash \
+                   "localhost/${IMAGE_NAME}:${FIRST}" \
+                   -c "rpm -qa --qf '%{NEVRA}\n' | sort | sha256sum" | cut -d' ' -f1)"
+          echo "built image package fingerprint: ${NEW}"
+          echo "fingerprint=${NEW}" >>"$GITHUB_OUTPUT"
+
+          if [[ "${EVENT_NAME}" != "schedule" ]]; then
+            echo "changed=true" >>"$GITHUB_OUTPUT"
+            echo "::notice title=Publishing::${EVENT_NAME} run - always publishes."
+            exit 0
+          fi
+
+          # Scheduled runs only ever happen on the default branch, so the tag to compare
+          # against is always DEFAULT_TAG.
+          OLD="$(skopeo inspect "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}" 2>/dev/null \
+                 | jq -r '.Labels["dev.vespera.pkg-fingerprint"] // ""' || true)"
+          echo "published fingerprint: ${OLD:-<none>}"
+
+          if [[ -z "${OLD}" ]]; then
+            # Fail open: no published fingerprint yet, or rechunk failed last time and the
+            # label never got attached. Publishing is the safe answer.
+            echo "changed=true" >>"$GITHUB_OUTPUT"
+            echo "::notice title=Publishing::No fingerprint on the published image; cannot compare."
+          elif [[ "${NEW}" != "${OLD}" ]]; then
+            echo "changed=true" >>"$GITHUB_OUTPUT"
+            echo "::notice title=Publishing::Package set changed since the published image."
+          else
+            echo "changed=false" >>"$GITHUB_OUTPUT"
+            echo "::notice title=No changes::Package set identical to the published image; skipping rechunk, push and sign. Nothing for installed machines to download."
+          fi
+
       # Rechunk before pushing so updates ship deltas, not the whole image.
       #
       # The single RUN puts every added package into ONE layer, which changes in its
@@ -228,9 +300,14 @@ jobs:
       # next step reports the outcome so it cannot rot unnoticed.
       - name: Rechunk image
         id: rechunk
+        if: steps.changed.outputs.changed == 'true'
         continue-on-error: true
         env:
           TAGS: ${{ steps.tags.outputs.tags }}
+          # Stamped onto the image as a label by the rechunk recipe. It cannot be applied
+          # at build time: buildah sets labels while building, but the fingerprint is only
+          # knowable once the image exists. Rechunk rebuilds the config regardless.
+          PKG_FINGERPRINT: ${{ steps.changed.outputs.fingerprint }}
         run: |
           set -euo pipefail
           # TAGS is a deliberately space-separated list, so read it into an array once
@@ -247,7 +324,7 @@ jobs:
             | jq -r '"final layer count: \(.[0].RootFS.Layers | length)"'
 
       - name: Report rechunk outcome
-        if: always()
+        if: always() && steps.changed.outputs.changed == 'true'
         run: |
           if [[ "${{ steps.rechunk.outcome }}" == "success" ]]; then
             echo "::notice title=Rechunk::Image rechunked; updates will download deltas."
@@ -258,7 +335,7 @@ jobs:
           fi
 
       - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && steps.changed.outputs.changed == 'true'
         uses: redhat-actions/podman-login@4934294ad0449894bcd1e9f191899d7292469603 # v1.7
         with:
           registry: ${{ env.IMAGE_REGISTRY }}
@@ -266,7 +343,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push to GHCR
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && steps.changed.outputs.changed == 'true'
         id: push
         uses: redhat-actions/push-to-registry@94ade333c38ecc0e60e94785125d9a52ca423b37 # v3.0.0
         with:
@@ -277,7 +354,7 @@ jobs:
       # Legacy simple-signing mode: rpm-ostree and bootc still require that format,
       # hence the pinned cosign 3.x and the explicit --new-bundle-format=false.
       - name: Sign image
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && steps.changed.outputs.changed == 'true'
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
           DIGEST: ${{ steps.push.outputs.digest }}
@@ -300,7 +377,7 @@ jobs:
             "${IMAGE_REGISTRY}/${IMAGE_NAME}@${DIGEST}"
 
       - name: Attest provenance
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && steps.changed.outputs.changed == 'true'
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
           subject-name: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}

@@ -238,6 +238,16 @@ rechunk tag=default_tag $max_layers="127":
           | jq -r '.[0].Config.Labels // {} | to_entries[] | "--label\n\(.key)=\(.value)"'
     )
 
+    # A package fingerprint from the caller, stamped on so the next scheduled build can
+    # tell whether anything actually changed and skip publishing a no-op. It has to be
+    # applied here rather than at build time: buildah sets labels while building, but the
+    # fingerprint is only knowable once the image exists, and this step rebuilds the
+    # config anyway. If rechunk is skipped or fails, the label is simply absent and the
+    # next build treats that as "cannot compare" and publishes.
+    if [[ -n "${PKG_FINGERPRINT:-}" ]]; then
+        label_args+=(--label "dev.vespera.pkg-fingerprint=${PKG_FINGERPRINT}")
+    fi
+
     # Pins the layer PLAN against the last published image, so unchanged packages stay
     # in identically-hashed layers instead of being reshuffled by the grouping
     # algorithm. Without it, two builds of the same content can land on different
