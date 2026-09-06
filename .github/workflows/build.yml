@@ -8,17 +8,22 @@ on:
     branches: [main]
     paths-ignore: ['**.md', 'LICENSE', 'docs/**']
   schedule:
-    # 07:00 UTC daily. The base image is rebuilt daily by ublue, and Renovate bumps the
+    # ~07:00 UTC daily. The base image is rebuilt daily by ublue, and Renovate bumps the
     # digest pin, but a scheduled build also picks up new Fedora updates in the layers
     # added on top.
     #
     # NOT EARLIER: 30-kmods.sh treats a missing kmod-yeetmouse as fatal, and the kmod for
     # a newly bumped kernel only exists once abirkel/yeetmouse-rpm has built it — its
-    # check-release workflow runs at 06:00 UTC and takes a few minutes, including the
+    # check-release workflow runs ~06:00 UTC and takes a few minutes, including the
     # downstream sign-and-publish in abirkel/rpm-repo and the Pages deploy. This used to
     # be 05:20, i.e. 40 minutes BEFORE the kmod it depends on could exist, which would
     # have failed every build on a kernel-bump day.
-    - cron: '0 7 * * *'
+    #
+    # OFF THE EXACT HOUR ON PURPOSE: GitHub's Actions scheduler is most congested at
+    # :00, and check-release's own '0 6 * * *' cron was observed drifting hours late
+    # from 2026-08-27 onward (09:54-18:09 UTC instead of ~06:30). Moving both crons off
+    # the hour doesn't guarantee on-time firing, but avoids the worst-contended slot.
+    - cron: '14 7 * * *'
   workflow_dispatch:
 
 env:
