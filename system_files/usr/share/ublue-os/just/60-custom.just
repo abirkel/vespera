@@ -296,7 +296,8 @@ check-ntsync:
     echo "${dim}older custom builds may need WINE_DISABLE_FAST_SYNC=0.${normal}"
 
 
-alias changelog := changelogs
+# No `alias changelog := changelogs`: the base image already defines `changelog`
+# for its own release notes, and re-aliasing it breaks `just --list`.
 
 # Show the package changelog for the latest published image
 changelogs:
