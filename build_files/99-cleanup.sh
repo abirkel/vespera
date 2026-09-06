@@ -56,7 +56,7 @@ info "i686 packages: ${i686_count}"
 # in this list because 60-system-config.sh symlinks /usr/bin/pulseaudio to
 # /usr/bin/true; that path is owned by the (uninstalled) pulseaudio package, so if
 # anything ever pulls it in, our symlink and its file would collide.
-for unwanted in docker-ce containerd.io bazaar cockpit-ws lutris obs-studio solaar pulseaudio; do
+for unwanted in docker-ce containerd.io bazaar cockpit-ws lutris obs-studio solaar pulseaudio goverlay plasma-welcome; do
     rpm -q "${unwanted}" >/dev/null 2>&1 && warn "unexpected package present: ${unwanted}"
 done
 

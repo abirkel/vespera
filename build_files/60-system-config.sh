@@ -49,6 +49,17 @@ if rpm -q supergfxctl >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
+# plasma-welcome: the first-run "Welcome Center" app. Not useful on a rebuild that
+# already reaches this machine configured; it only prompts for things this image's
+# own hooks and preinstall.d already handle.
+# ---------------------------------------------------------------------------
+if rpm -q plasma-welcome >/dev/null 2>&1; then
+    log "Removing plasma-welcome"
+    dnf5 -y remove plasma-welcome
+    info "plasma-welcome removed"
+fi
+
+# ---------------------------------------------------------------------------
 # Samba: only the parts the samba-usershares package does NOT do.
 #
 # Verified: samba-usershares is installed in the base and already ships

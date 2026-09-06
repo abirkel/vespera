@@ -129,6 +129,7 @@ copr_install "ublue-os/packages" \
 copr_install "ledif/kairpods"           kairpods
 copr_install "major-tom/klassy"         klassy
 copr_install "fuddlesworth/PlasmaZones" plasmazones
+copr_install "deltacopy/plasma6-applets-kara" plasma6-applets-kara
 
 # ---------------------------------------------------------------------------
 # Valve's Vapor look-and-feel, without the branding hijack.
@@ -195,5 +196,34 @@ if fetch -o "${tmp}/${CICPOFFS_RPM}" "${CICPOFFS_URL}"; then
     info "installed $(rpm -q cicpoffs)"
 else
     warn "cicpoffs: ${CICPOFFS_RPM} not published yet for fc${FEDORA_MAJOR}; skipped"
+fi
+rm -rf "${tmp}"
+
+# ---------------------------------------------------------------------------
+# Starship — cross-shell prompt. No Fedora package, no COPR maintaining one (see
+# https://discussion.fedoraproject.org/t/199889 — no Rust-fluent maintainer with the
+# time). Upstream ships no RPM either, only a release tarball per target. This takes
+# the musl static build specifically so the binary carries no glibc version coupling
+# to this image's Fedora release — verified: `file` reports statically linked, no
+# dynamic libc dependency.
+#
+# INTEGRITY: no GPG signature published, but unlike cicpoffs there IS a checksum
+# file alongside the tarball. Verified against it rather than trusting TLS alone.
+# ---------------------------------------------------------------------------
+log "Starship (GitHub release, checksum-verified)"
+readonly STARSHIP_ASSET="starship-x86_64-unknown-linux-musl.tar.gz"
+readonly STARSHIP_BASE_URL="https://github.com/starship/starship/releases/latest/download"
+tmp="$(mktemp -d)"
+if fetch -o "${tmp}/${STARSHIP_ASSET}" "${STARSHIP_BASE_URL}/${STARSHIP_ASSET}" \
+    && fetch -o "${tmp}/${STARSHIP_ASSET}.sha256" "${STARSHIP_BASE_URL}/${STARSHIP_ASSET}.sha256"; then
+    (
+        cd "${tmp}"
+        echo "$(cat "${STARSHIP_ASSET}.sha256")  ${STARSHIP_ASSET}" | sha256sum -c -
+    ) || die "starship: checksum verification failed"
+    tar -xzf "${tmp}/${STARSHIP_ASSET}" -C "${tmp}"
+    install -Dm0755 "${tmp}/starship" /usr/bin/starship
+    info "installed starship $("${tmp}/starship" --version | head -1)"
+else
+    warn "starship: download failed; skipped"
 fi
 rm -rf "${tmp}"

@@ -46,7 +46,6 @@ GAMING=(
     libFAudio libFAudio.i686
     wine winetricks
     protontricks            # native, because Steam here is native (see README)
-    goverlay
     libxcrypt-compat        # legacy libcrypt.so.1 for old game binaries
     python3-icoextract      # real icons for Wine/Proton shortcuts
 )
@@ -92,6 +91,8 @@ KDE=(
     plasma-oxygen               # legacy Oxygen style, opt-in in System Settings
     oxygen-icon-theme
     ksystemlog
+    kdepim-addons kdepim-runtime  # Kontact-family plugins and resource agents
+    merkuro                       # KDE's calendar/contacts app (Kontact-lite)
 )
 
 # ---------------------------------------------------------------------------
