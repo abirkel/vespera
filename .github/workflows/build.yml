@@ -53,7 +53,7 @@ jobs:
     steps:
       # The image is large; the runner needs the space back.
       - name: Free disk space
-        uses: ublue-os/remove-unwanted-software@517622d6452028f266b7ba4cc9a123b5f58a6b53 # v7
+        uses: ublue-os/remove-unwanted-software@cc0becac701cf642c8f0a6613bbdaf5dc36b259e # v9
         with:
           remove-codeql: true
 
@@ -64,7 +64,7 @@ jobs:
           mount-opts: compress-force=zstd:2
 
       - name: Checkout
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -403,7 +403,7 @@ jobs:
 
       - name: Log in to GHCR
         if: github.event_name != 'pull_request' && steps.changed.outputs.changed == 'true'
-        uses: redhat-actions/podman-login@4934294ad0449894bcd1e9f191899d7292469603 # v1.7
+        uses: redhat-actions/podman-login@50c2d9a331bb67c8fdab99b86455fad05e2e3252 # v2.0
         with:
           registry: ${{ env.IMAGE_REGISTRY }}
           username: ${{ github.actor }}
@@ -480,7 +480,7 @@ jobs:
 
       - name: Attest provenance
         if: github.event_name != 'pull_request' && steps.changed.outputs.changed == 'true'
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-name: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.push.outputs.digest }}
@@ -524,7 +524,7 @@ jobs:
       packages: read
     steps:
       - name: Checkout
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # The commit table is `git log <prev-revision>..<curr-revision>`, so both
           # revisions must be in this clone. ublue uses 500 for the same reason; the
