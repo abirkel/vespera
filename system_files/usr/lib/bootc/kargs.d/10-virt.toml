@@ -1,0 +1,18 @@
+# PROVENANCE: Bazzite's values — desktop/shared/usr/share/ublue-os/just/
+#   84-bazzite-virt.just appends exactly these two kargs. NOT a vespera invention, as
+#   previously recorded here.
+#
+# Difference in mechanism, deliberately: Bazzite applies them with
+# `rpm-ostree kargs --append-if-missing` from an opt-in ujust recipe, and ships a
+# teardown recipe with --delete-if-present. That gating exists because their kargs are
+# imperative and must be undoable. Ours are declarative — deleting this file removes
+# them — and Windows guests are a stated goal for this image, so they are always on.
+#
+# What they do: KVM's default is to inject #GP for an MSR access it does not handle
+# (ignore_msrs=false) and to log each one (report_ignored_msrs=true). Some Windows and
+# older guests touch MSRs KVM does not model, which produces guest faults and a flood of
+# dmesg noise. Verified both are real kvm module parameters.
+#
+# Tradeoff worth knowing: ignore_msrs is global and reduces guest fidelity, so it can
+# mask a genuine guest bug. Upstream treats it as a debugging aid.
+kargs = ["kvm.ignore_msrs=1", "kvm.report_ignored_msrs=0"]

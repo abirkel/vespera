@@ -1,0 +1,18 @@
+# PROVENANCE: ours. The need is structural, not copied: host mangohud/vkBasalt do not
+#   apply inside a Flatpak sandbox, so sandboxed games need the layer as a runtime
+#   extension. Native Steam games use the host copies.
+#
+# BRANCH TRACKS THE FREEDESKTOP RUNTIME, not the app. Faugus (the only Flatpak here
+# that runs games) uses org.gnome.Platform/50, which declares VulkanLayer
+# version=25.08. `ujust check-overlays` verifies this on a live system; when it
+# drifts, preinstall logs a failure for these two refs and carries on.
+#
+# OBSVkCapture is deliberately absent — obs-studio is excluded from this image.
+
+[Flatpak Preinstall org.freedesktop.Platform.VulkanLayer.MangoHud]
+Branch=25.08
+IsRuntime=true
+
+[Flatpak Preinstall org.freedesktop.Platform.VulkanLayer.vkBasalt]
+Branch=25.08
+IsRuntime=true

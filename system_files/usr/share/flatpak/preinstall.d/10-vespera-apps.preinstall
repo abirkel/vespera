@@ -1,0 +1,89 @@
+# PROVENANCE: mechanism is flatpak upstream (>= 1.18) preinstall.d; Fedora ships it
+#   but no unit, so vespera-flatpak-setup.service supplies one. App list is chosen
+#   for this image, not copied. Deliberately not Bazzite's flatpak-blocklist +
+#   bespoke installer, which only its own scripts read.
+#   Format verified against flatpak's common/flatpak-dir.c: group prefix
+#   "Flatpak Preinstall ", keys Branch / IsRuntime / CollectionID / Install.
+#   IsRuntime is omitted for apps: the parser defaults it to FALSE, so stating it 18
+#   times was noise. It appears only where it is load-bearing.
+#
+# Absent on purpose: com.valvesoftware.Steam and net.lutris.Lutris. Steam is native,
+# Lutris is excluded, and both are masked in vespera-flatpak-setup so neither can
+# arrive as a second copy.
+# --- Browser -----------------------------------------------------------------
+# Out-of-band updates. The RPM is removed in 60-system-config.sh; the desktop ID is
+# identical either way, so mimeapps handlers keep working untouched.
+[Flatpak Preinstall org.mozilla.firefox]
+Branch=stable
+
+# --- Theming: makes GTK3 Flatpaks respect Breeze -----------------------------
+[Flatpak Preinstall org.gtk.Gtk3theme.Breeze]
+Branch=3.22
+IsRuntime=true
+
+# --- Flatpak / container management ------------------------------------------
+[Flatpak Preinstall com.github.tchx84.Flatseal]
+Branch=stable
+
+[Flatpak Preinstall io.github.flattool.Warehouse]
+Branch=stable
+
+[Flatpak Preinstall it.mijorus.gearlever]
+Branch=stable
+
+[Flatpak Preinstall io.podman_desktop.PodmanDesktop]
+Branch=stable
+
+[Flatpak Preinstall io.github.DenysMb.Kontainer]
+Branch=stable
+
+# --- Gaming ------------------------------------------------------------------
+# ProtonUp-Qt: installs Proton-GE / Wine-GE / DXVK builds. Reaches native Steam via
+# its own ~/.steam and ~/.local/share/Steam grants; a library on another drive needs
+# a --filesystem override.
+[Flatpak Preinstall net.davidotek.pupgui2]
+Branch=stable
+
+# Faugus: the one non-Steam launcher kept. The only Flatpak here that runs games, so
+# it is what the VulkanLayer branch pin has to match.
+[Flatpak Preinstall io.github.Faugus.faugus-launcher]
+Branch=stable
+
+# --- Hardware ----------------------------------------------------------------
+# LACT: the only tool that sets GPU fan curves and power limits on a Wayland NVIDIA
+# desktop (nvidia-settings needs XNVCtrl + Coolbits; Kinoite has no X11). Needs a
+# root daemon outside the sandbox AND admin_user in /etc/lact/config.yaml — wheel
+# membership is not enough. `ujust setup-lact` walks through both.
+[Flatpak Preinstall io.github.ilya_zlobintsev.LACT]
+Branch=stable
+
+# Piper: talks to ratbagd on the system bus; ratbagd is in the base and enabled.
+[Flatpak Preinstall org.freedesktop.Piper]
+Branch=stable
+
+# --- KDE applications, as Flatpaks so they update independently of the image --
+[Flatpak Preinstall org.kde.krita]
+Branch=stable
+
+[Flatpak Preinstall org.kde.okular]
+Branch=stable
+
+[Flatpak Preinstall org.kde.gwenview]
+Branch=stable
+
+[Flatpak Preinstall org.kde.kcalc]
+Branch=stable
+
+[Flatpak Preinstall org.kde.haruna]
+Branch=stable
+
+# Client. The base already ships krdp, the *server*.
+[Flatpak Preinstall org.kde.krdc]
+Branch=stable
+
+# --- Media / chat ------------------------------------------------------------
+[Flatpak Preinstall io.github.mpc_qt.mpc-qt]
+Branch=stable
+
+[Flatpak Preinstall dev.vencord.Vesktop]
+Branch=stable

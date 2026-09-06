@@ -1,188 +1,563 @@
 ---
-name: Build container image
+name: Build image
 on:
   pull_request:
-    branches:
-      - main
-  # schedule:
-  #   - cron: '05 10 * * *'  # 10:05am UTC everyday (disabled for now)
+    branches: [main]
+    paths-ignore: ['**.md', 'LICENSE', 'docs/**']
   push:
-    branches:
-      - main
-    paths-ignore:
-      - '**/README.md'
+    branches: [main]
+    paths-ignore: ['**.md', 'LICENSE', 'docs/**']
+  schedule:
+    # 07:00 UTC daily. The base image is rebuilt daily by ublue, and Renovate bumps the
+    # digest pin, but a scheduled build also picks up new Fedora updates in the layers
+    # added on top.
+    #
+    # NOT EARLIER: 30-kmods.sh treats a missing kmod-yeetmouse as fatal, and the kmod for
+    # a newly bumped kernel only exists once abirkel/yeetmouse-rpm has built it — its
+    # check-release workflow runs at 06:00 UTC and takes a few minutes, including the
+    # downstream sign-and-publish in abirkel/rpm-repo and the Pages deploy. This used to
+    # be 05:20, i.e. 40 minutes BEFORE the kmod it depends on could exist, which would
+    # have failed every build on a kernel-bump day.
+    - cron: '0 7 * * *'
   workflow_dispatch:
 
 env:
-  IMAGE_DESC: "Custom Bazzite-nvidia with Podman-focused developer tools"
-  IMAGE_KEYWORDS: "bootc,ublue,universal-blue,bazzite,nvidia,podman,developer"
-  IMAGE_LOGO_URL: "https://avatars.githubusercontent.com/u/120078124?s=200&v=4"
-  IMAGE_NAME: "${{ github.event.repository.name }}"
-  IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"
-  DEFAULT_TAG: "latest"
+  IMAGE_NAME: vespera
+  IMAGE_REGISTRY: ghcr.io/${{ github.repository_owner }}
+  IMAGE_DESC: "Fedora Kinoite with NVIDIA, gaming and light development tooling"
+  DEFAULT_TAG: latest
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}-${{ inputs.brand_name}}-${{ inputs.stream_name }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-jobs:
-  build_push:
-    name: Build and push image
-    runs-on: ubuntu-24.04
+permissions: {}
 
+jobs:
+  build:
+    name: Build and push
+    runs-on: ubuntu-24.04
+    outputs:
+      changed: ${{ steps.changed.outputs.changed }}
+      version: ${{ steps.version.outputs.version }}
     permissions:
       contents: read
       packages: write
       id-token: write
-
+      attestations: write
     steps:
-      - name: Prepare environment
-        run: |
-          # Lowercase the image uri
-          echo "IMAGE_REGISTRY=${IMAGE_REGISTRY,,}" >> ${GITHUB_ENV}
-          echo "IMAGE_NAME=${IMAGE_NAME,,}" >> ${GITHUB_ENV}
-
-      # These stage versions are pinned by https://github.com/renovatebot/renovate
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      # You only use this action if the container-storage-action proves to be unreliable, you don't need to enable both
-      # This is optional, but if you see that your builds are way too big for the runners, you can enable this by uncommenting the following lines:
-      - name: Maximize build space
-        uses: ublue-os/remove-unwanted-software@695eb75bc387dbcd9685a8e72d23439d8686cba6
+      # The image is large; the runner needs the space back.
+      - name: Free disk space
+        uses: ublue-os/remove-unwanted-software@517622d6452028f266b7ba4cc9a123b5f58a6b53 # v7
+        with:
+          remove-codeql: true
 
       - name: Mount BTRFS for podman storage
-        id: container-storage-action
-        uses: ublue-os/container-storage-action@dc1f4c8f17b672069e921f001132f7cf98a423a6
-
-        # Fallback to the remove-unwanted-software-action if github doesn't allocate enough space
-        # See: https://github.com/ublue-os/container-storage-action/pull/11
-        continue-on-error: true 
+        uses: ublue-os/container-storage-action@25e05be4948f77746938687877829d15c5038036
+        continue-on-error: true
         with:
-          target-dir: /var/lib/containers
           mount-opts: compress-force=zstd:2
 
-      - name: Get current date
-        id: date
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          persist-credentials: false
+
+      # `just` is the only tool this workflow needs that the runner image lacks.
+      # Verified against the ubuntu-24.04 manifest: Podman 5.8.4, Buildah 1.33.7,
+      # Skopeo 1.13.3, jq, shellcheck, Node, Python and yamllint are all preinstalled —
+      # so `just rechunk` (podman + skopeo + jq) and `just check` need nothing added.
+      # An earlier version also apt-installed skopeo, which was redundant.
+      - name: Install just
+        run: sudo apt-get update && sudo apt-get install -y just
+
+      - name: Check just syntax
+        run: just check
+
+      # Version: <fedora-major>.<date>.<run attempt>, e.g. 44.20260828.1
+      #
+      # Read from the BASE IMAGE's own label rather than grepped from the
+      # Containerfile, which no longer holds a version number now that BASE_TAG is
+      # `latest`. The published tag is then always the release actually built
+      # against, including the day ublue promotes `latest` to Fedora 45.
+      - name: Compute version
+        id: version
         run: |
-          # This generates a timestamp like what is defined on the ArtifactHub documentation
-          # E.G: 2022-02-08T15:38:15Z'
-          # https://artifacthub.io/docs/topics/repositories/container-images/
-          # https://linux.die.net/man/1/date
-          echo "date=$(date -u +%Y\-%m\-%d\T%H\:%M\:%S\Z)" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          BASE="$(grep -oP '^ARG BASE_IMAGE="\K[^"]+' Containerfile)"
+          TAG="$(grep -oP '^ARG BASE_TAG="\K[^"]+' Containerfile)"
+          if [[ "${TAG}" == *@* ]]; then REF="${BASE}@${TAG#*@}"; else REF="${BASE}:${TAG}"; fi
+          BASE_VERSION="$(skopeo inspect "docker://${REF}" \
+            | jq -r '.Labels["org.opencontainers.image.version"] // empty')"
+          FEDORA_MAJOR="${BASE_VERSION%%.*}"
+          if [[ ! "${FEDORA_MAJOR}" =~ ^[0-9]+$ ]]; then
+            echo "could not determine Fedora major from base label '${BASE_VERSION}'" >&2
+            exit 1
+          fi
+          # The dated tag is the anchor the changelog diffs against, so it MUST be unique.
+          # github.run_attempt is 1 for every NEW run and only increments when the same run
+          # is retried, so two publishes on one day (a push plus the 07:00 schedule) both
+          # produced .1 and the second silently overwrote the first, destroying the older
+          # image the changelog needs to compare against. Take the next free index for
+          # today from the registry instead. Bazzite solves the same problem with a
+          # "relabel" step that suffixes .1, .2 on collision.
+          DATE="$(date -u +%Y%m%d)"
+          PREFIX="${FEDORA_MAJOR}.${DATE}"
+          HIGHEST="$(skopeo list-tags "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}" 2>/dev/null \
+                     | jq -r --arg p "${PREFIX}." \
+                         '.Tags[]? | select(startswith($p)) | ltrimstr($p)' \
+                     | grep -xE '[0-9]+' | sort -n | tail -1 || true)"
+          VERSION="${PREFIX}.$(( ${HIGHEST:-0} + 1 ))"
+          echo "fedora_major=${FEDORA_MAJOR}" >>"$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >>"$GITHUB_OUTPUT"
+          echo "Base ${REF} is Fedora ${FEDORA_MAJOR}; building version ${VERSION}"
 
-      # Image metadata for https://artifacthub.io/ - This is optional but is highly recommended so we all can get a index of all the custom images
-      # The metadata by itself is not going to do anything, you choose if you want your image to be on ArtifactHub or not.
-      - name: Image Metadata
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
-        id: metadata
-        with:
-          # This generates all the tags for your image, you can add custom tags here too!
-          # Default tags are "$DEFAULT_TAG" and "$DEFAULT_TAG.$date".
-          tags: |
-            type=raw,value=${{ env.DEFAULT_TAG }}
-            type=raw,value=${{ env.DEFAULT_TAG }}.{{date 'YYYYMMDD'}}
-            type=raw,value={{date 'YYYYMMDD'}}
-            type=sha,enable=${{ github.event_name == 'pull_request' }}
-            type=ref,event=pr
-          labels: |
-            io.artifacthub.package.readme-url=https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/${{ github.sha }}/README.md
-            org.opencontainers.image.created=${{ steps.date.outputs.date }}
-            org.opencontainers.image.description=${{ env.IMAGE_DESC }}
-            org.opencontainers.image.documentation=https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/${{ github.sha }}/README.md
-            org.opencontainers.image.source=https://github.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/blob/${{ github.sha }}/Containerfile
-            org.opencontainers.image.title=${{ env.IMAGE_NAME }}
-            org.opencontainers.image.url=https://github.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/tree/${{ github.sha }}
-            org.opencontainers.image.vendor=${{ github.repository_owner }}
-            org.opencontainers.image.version=${{ env.DEFAULT_TAG }}.{{date 'YYYYMMDD'}}
-            io.artifacthub.package.deprecated=false
-            io.artifacthub.package.keywords=${{ env.IMAGE_KEYWORDS }}
-            io.artifacthub.package.license=Apache-2.0
-            io.artifacthub.package.logo-url=${{ env.IMAGE_LOGO_URL }}
-            io.artifacthub.package.prerelease=false
-            containers.bootc=1
-          sep-tags: " "
-          sep-annotations: " "
+      - name: Compute tags
+        id: tags
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          VERSION: ${{ steps.version.outputs.version }}
+          FEDORA_MAJOR: ${{ steps.version.outputs.fedora_major }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
+          # buildah-build takes a space-separated list.
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            TAGS="pr-${PR_NUMBER}"
+          elif [[ "${REF_NAME}" != "${DEFAULT_BRANCH}" ]]; then
+            # A NON-DEFAULT ref publishes under its branch name and nothing else.
+            # `latest` must only ever come from the default branch: installed machines
+            # follow that tag, and on this fleet uupd applies it automatically, so a
+            # trial build reaching `latest` would rebase real hardware unattended.
+            # Sanitised because a Docker tag allows only [A-Za-z0-9._-], max 128 chars,
+            # and must not start with . or - (branch names like renovate/foo would
+            # otherwise produce an invalid tag).
+            TAGS="$(printf '%s' "${REF_NAME}" \
+                    | tr -c 'a-zA-Z0-9._-' '-' \
+                    | sed 's/^[.-]*//' \
+                    | cut -c1-64)"
+            [[ -n "${TAGS}" ]] || { echo "branch name sanitised to nothing" >&2; exit 1; }
+          else
+            TAGS="${DEFAULT_TAG} ${VERSION} ${FEDORA_MAJOR}"
+          fi
+          echo "tags=${TAGS}" >>"$GITHUB_OUTPUT"
+          echo "Tags: ${TAGS}"
 
-      - name: Build Image
-        id: build_image
-        uses: redhat-actions/buildah-build@719e3c40d8af9790c23eca13f7daa339f2867034 # v3
+      # Verify the base image's signature before building on it.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
-          containerfiles: |
-            ./Containerfile
-          # Postfix image name with -custom to make it a little more descriptive
-          # Syntax: https://docs.github.com/en/actions/learn-github-actions/expressions#format
+          # BOTH pins matter, and they are a matched pair — the same combination ublue's
+          # image-template uses.
+          #
+          # cosign v3.1.2, because the installer's own default is v2.5.3, which has no
+          # --new-bundle-format flag at all (the sign step died on "unknown flag" after a
+          # full 50-minute build).
+          #
+          # Installer v4.1.2, because v3.9.2 verifies the requested binary against a
+          # detached cosign-linux-amd64.sig, and cosign 3.x releases no longer publish one
+          # — curl exits 22 on the 404, so v3.9.2 simply cannot install any cosign 3.x.
+          cosign-release: v3.1.2
+
+      - name: Verify upstream image signatures
+        run: |
+          set -euo pipefail
+          verify_arg() {
+            local image_arg="$1" tag_arg="$2" image tag ref
+            image="$(grep -oP "^ARG ${image_arg}=\"\\K[^\"]+" Containerfile)"
+            tag="$(grep -oP "^ARG ${tag_arg}=\"\\K[^\"]+" Containerfile)"
+            # pinDigests writes the digest into the tag ARG, giving "latest@sha256:...".
+            # Verify by digest alone then: a ref carrying both a tag and a digest is not
+            # universally accepted.
+            if [[ "${tag}" == *@* ]]; then ref="${image}@${tag#*@}"; else ref="${image}:${tag}"; fi
+            echo "Verifying ${ref}"
+            cosign verify \
+              --key https://raw.githubusercontent.com/ublue-os/main/main/cosign.pub \
+              "${ref}"
+          }
+
+          verify_arg BASE_IMAGE BASE_TAG
+
+          # akmods MUST be verified too, not just the base. Its RPMs are bind-mounted and
+          # installed from /tmp/akmods-rpms, i.e. as @commandline, so dnf reports
+          # "skipped OpenPGP checks" for them — the RPM headers are signed but nothing
+          # checks them. That makes this image signature the only thing vouching for
+          # kernel modules that then load into the running kernel. Verified that ublue
+          # signs it with the same key as the base.
+          verify_arg AKMODS_IMAGE AKMODS_TAG
+
+      - name: Build image
+        id: build
+        # v3, and the version matters enormously for build time. v2.13 unconditionally
+        # exported a storage mount_program of fuse-overlayfs, so every buildah and podman
+        # write in this job went through userspace FUSE. Measured against the old
+        # bazzite-based pipeline, which is already on v3: our COMMIT took 2380s versus 7s,
+        # and `bootc container lint` 664s versus 9s — both being full-tree walks. v3.1.0
+        # detects rootless native overlayfs (kernel 5.11+) and skips the override, logging
+        # "Kernel supports rootless native overlayfs, skipping fuse-overlayfs override".
+        # Its release notes cite both the performance regression and silent data corruption
+        # on ubuntu-24.04 runners.
+        #
+        # v3.0.0 also changed `squash` to default true. Harmless here: buildah's --squash
+        # only collapses the layers this build ADDS (base layers are untouched), this
+        # Containerfile has just two RUNs, and the image is rechunked afterwards anyway.
+        uses: redhat-actions/buildah-build@719e3c40d8af9790c23eca13f7daa339f2867034 # v3.1.0
+        with:
+          containerfiles: ./Containerfile
           image: ${{ env.IMAGE_NAME }}
-          tags: ${{ steps.metadata.outputs.tags }}
-          labels: ${{ steps.metadata.outputs.labels }}
-          oci: false
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            IMAGE_NAME=${{ env.IMAGE_NAME }}
+            IMAGE_VENDOR=${{ github.repository_owner }}
+            IMAGE_REGISTRY=${{ env.IMAGE_REGISTRY }}
+            VERSION_TAG=${{ steps.version.outputs.version }}
+          # image.revision is what makes the changelog's commit table possible: it turns a
+          # pair of published images into `git log <prev-revision>..<curr-revision>`, the
+          # same mechanism ublue uses. Without it that section is silently empty.
+          # NOTE: no comments inside the block scalars below - every line there is passed
+          # through verbatim as a literal label or build-arg.
+          labels: |
+            org.opencontainers.image.title=${{ env.IMAGE_NAME }}
+            org.opencontainers.image.description=${{ env.IMAGE_DESC }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
+            org.opencontainers.image.licenses=Apache-2.0
+            containers.bootc=1
+          oci: true
 
-      # Rechunk is a script that we use on Universal Blue to make sure there isnt a single huge layer when your image gets published.
-      # This does not make your image faster to download, just provides better resumability and fixes a few errors.
-      # Documentation for Rechunk is provided on their github repository at https://github.com/hhd-dev/rechunk
-      # You can enable it by uncommenting the following lines:
-      # - name: Run Rechunker
-      #   id: rechunk
-      #   uses: ublue-os/legacy-rechunk@a925083d9af7cb04b3e2a6e8c01bfa495f38b710 # v1.0.0
-      #   with:
-      #     rechunk: 'ghcr.io/ublue-os/legacy-rechunk:v1.0.0-x86_64'
-      #     ref: "localhost/${{ env.IMAGE_NAME }}:${{ env.DEFAULT_TAG }}"
-      #     prev-ref: "${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.DEFAULT_TAG }}"
-      #     skip_compression: true
-      #     version: ${{ env.CENTOS_VERSION }}
-      #     labels: ${{ steps.metadata.outputs.labels }} # Rechunk strips out all the labels during build, this needs to be reapplied here with newline separator
+      # Surface soft failures (a missing yeetmouse kmod, say) even on success.
+      - name: Report build warnings
+        if: always()
+        run: |
+          echo "Check the '99-cleanup.sh' and 'BUILD COMPLETED WITH WARNINGS'"
+          echo "sections of the build log above for soft failures."
 
-      # This is necessary so that the podman socket can find the rechunked image on its storage
-      # - name: Load in podman and tag
-      #   run: |
-      #     IMAGE=$(podman pull ${{ steps.rechunk.outputs.ref }})
-      #     sudo rm -rf ${{ steps.rechunk.outputs.output }}
-      #     for tag in ${{ steps.metadata.outputs.tags }}; do
-      #       podman tag $IMAGE ${{ env.IMAGE_NAME }}:$tag
-      #     done
+      # Publish only when the image's CONTENT actually changed.
+      #
+      # ublue rebuilds the base daily, but the rebuild is frequently a no-op: across eight
+      # consecutive kinoite-nvidia builds there were only five distinct rpmostree.inputhash
+      # values, so 3 of 7 day-to-day transitions carried no package change at all. Their
+      # digest and ostree.commit still move every day, so comparing those would never skip.
+      #
+      # Publishing a no-op is not free for the machines that track this tag: a new digest
+      # makes bootc/uupd stage a fresh deployment and ask for a reboot to apply nothing.
+      # So the gate is here, AFTER the build, comparing the real resolved package set of
+      # the image just built against the one recorded on the published tag.
+      #
+      # One fingerprint covers both halves of the question — "did the base change?" and
+      # "did any package we add change?" — because rpm -qa lists the base's kernel,
+      # systemd and KDE alongside our wine, steam, Terra and COPR packages.
+      #
+      # Flatpaks are correctly absent from it: only preinstall.d DECLARATIONS ship in the
+      # image, and the apps themselves are pulled on the desktop at first boot and updated
+      # thereafter by flatpak-system-update.timer, so they can never churn the image.
+      #
+      # SCHEDULE ONLY. A push can change file content (system_files, hooks, kargs) without
+      # changing a single NEVRA, so pushes must always publish. On a scheduled run the repo
+      # is byte-identical to the last build, which is exactly why a package fingerprint is
+      # sufficient there.
+      #
+      # Blind spots, both accepted: the Microsoft core fonts are fetched .cab files
+      # extracted with cabextract, so they carry no NEVRA at all, and cicpoffs comes from a
+      # rolling `master` release whose asset is replaced in place, so its NEVRA can stay
+      # cicpoffs-0.3-1.fc44 while the binary changes. Any push or manual dispatch covers
+      # both.
+      - name: Decide whether the image changed
+        id: changed
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TAGS: ${{ steps.tags.outputs.tags }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          read -r -a tag_list <<<"${TAGS}"
+          FIRST="${tag_list[0]}"
 
-      # These `if` statements are so that pull requests for your custom images do not make it publish any packages under your name without you knowing
-      # They also check if the runner is on the default branch so that things like the merge queue (if you enable it), are going to work
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+          # ONE container invocation serves both consumers: this gate needs a hash of the
+          # package set, and the changelog needs the set itself. --entrypoint is required
+          # because this image's CMD is /sbin/init.
+          #
+          # %{SOURCERPM} is the field that lets the changelog group subpackages EXACTLY -
+          # kernel-modules and kernel-devel come from one source build - instead of
+          # inferring it from matching version strings the way ublue's script does. Theirs
+          # collapses on version alone, which on a real bazzite release silently hid five
+          # genuine source-package updates, including one where an UNCHANGED package
+          # (qt6-filesystem) suppressed a changed one (qt6-srpm-macros) that happened to
+          # share its old version.
+          podman run --rm --entrypoint /usr/bin/bash \
+            "localhost/${IMAGE_NAME}:${FIRST}" \
+            -c 'rpm -qa --qf "%{NAME}\t%{EPOCH}\t%{VERSION}-%{RELEASE}\t%{SOURCERPM}\t%{NEVRA}\n"' \
+            >pkgs.tsv
+          echo "packages in image: $(wc -l <pkgs.tsv)"
+
+          NEW="$(cut -f5 pkgs.tsv | LC_ALL=C sort | sha256sum | cut -d' ' -f1)"
+          echo "built image package fingerprint: ${NEW}"
+          echo "fingerprint=${NEW}" >>"$GITHUB_OUTPUT"
+
+          # A syft-json-compatible subset: syft names these fields identically, so the
+          # ublue parsing helpers work on it unchanged.
+          python3 - "${VERSION}" >packages.json <<'PY'
+          import json, sys
+          arts = []
+          for line in open("pkgs.tsv"):
+              f = line.rstrip("\n").split("\t")
+              if len(f) < 5:
+                  continue
+              name, epoch, vr, srpm = f[0], f[1], f[2], f[3]
+              arts.append({
+                  "name": name,
+                  "version": vr if epoch in ("(none)", "") else f"{epoch}:{vr}",
+                  "type": "rpm",
+                  "metadata": {"sourceRpm": srpm},
+              })
+          arts.sort(key=lambda a: (a["name"], a["version"]))
+          json.dump({"source": {"name": "vespera", "version": sys.argv[1]},
+                     "artifacts": arts}, sys.stdout)
+          PY
+          echo "manifest bytes: $(stat -c%s packages.json)"
+
+          if [[ "${EVENT_NAME}" != "schedule" ]]; then
+            echo "changed=true" >>"$GITHUB_OUTPUT"
+            echo "::notice title=Publishing::${EVENT_NAME} run - always publishes."
+            exit 0
+          fi
+
+          # Scheduled runs only ever happen on the default branch, so the tag to compare
+          # against is always DEFAULT_TAG.
+          REF="docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}"
+          OLD="$(skopeo inspect "${REF}" 2>/dev/null \
+                 | jq -r '.Labels["dev.vespera.pkg-fingerprint"] // ""' || true)"
+          echo "published fingerprint: ${OLD:-<none>}"
+
+          if [[ -z "${OLD}" ]]; then
+            # Fail open: no published fingerprint yet, or rechunk failed last time and the
+            # label never got attached. Publishing is the safe answer.
+            echo "changed=true" >>"$GITHUB_OUTPUT"
+            echo "::notice title=Publishing::No fingerprint on the published image; cannot compare."
+          elif [[ "${NEW}" != "${OLD}" ]]; then
+            echo "changed=true" >>"$GITHUB_OUTPUT"
+            echo "::notice title=Publishing::Package set changed since the published image."
+          else
+            echo "changed=false" >>"$GITHUB_OUTPUT"
+            MSG="Package set identical to the published image; skipping rechunk, push"
+            MSG="${MSG} and sign. Nothing for installed machines to download."
+            echo "::notice title=No changes::${MSG}"
+          fi
+
+      # Rechunk before pushing so updates ship deltas, not the whole image.
+      #
+      # The single RUN puts every added package into ONE layer, which changes in its
+      # entirety on any change. build-chunked-oci re-splits the flattened tree into
+      # per-package content-addressed layers, so an update only downloads what moved.
+      # Measured on comparable images: 40-80% less, >90% back-to-back. Same tool
+      # Bazzite and ublue's image-template use, already in the base image.
+      #
+      # continue-on-error is deliberate: this is an optimisation, and a fat-but-correct
+      # image beats blocking every update — the same trade as a lagging akmods. The
+      # next step reports the outcome so it cannot rot unnoticed.
+      - name: Rechunk image
+        id: rechunk
+        if: steps.changed.outputs.changed == 'true'
+        continue-on-error: true
+        env:
+          TAGS: ${{ steps.tags.outputs.tags }}
+          # Stamped onto the image as a label by the rechunk recipe. It cannot be applied
+          # at build time: buildah sets labels while building, but the fingerprint is only
+          # knowable once the image exists. Rechunk rebuilds the config regardless.
+          PKG_FINGERPRINT: ${{ steps.changed.outputs.fingerprint }}
+        run: |
+          set -euo pipefail
+          # TAGS is a deliberately space-separated list, so read it into an array once
+          # rather than relying on repeated unquoted word splitting.
+          read -r -a tag_list <<<"${TAGS}"
+          FIRST="${tag_list[0]}"
+          just rechunk "${FIRST}"
+          # Re-point the other tags; otherwise they still reference the pre-rechunk
+          # image and the push step publishes a mix.
+          for t in "${tag_list[@]:1}"; do
+            podman tag "localhost/${IMAGE_NAME}:${FIRST}" "localhost/${IMAGE_NAME}:${t}"
+          done
+          podman inspect "localhost/${IMAGE_NAME}:${FIRST}" \
+            | jq -r '"final layer count: \(.[0].RootFS.Layers | length)"'
+
+      - name: Report rechunk outcome
+        if: always() && steps.changed.outputs.changed == 'true'
+        run: |
+          if [[ "${{ steps.rechunk.outcome }}" == "success" ]]; then
+            echo "::notice title=Rechunk::Image rechunked; updates will download deltas."
+          else
+            msg="Publishing an un-rechunked image. It is correct, but every update"
+            msg="${msg} will re-download the full package layer. See the Rechunk step log."
+            echo "::warning title=Rechunk failed::${msg}"
+          fi
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request' && steps.changed.outputs.changed == 'true'
+        uses: redhat-actions/podman-login@4934294ad0449894bcd1e9f191899d7292469603 # v1.7
         with:
-          registry: ghcr.io
+          registry: ${{ env.IMAGE_REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push To GHCR
-        uses: redhat-actions/push-to-registry@94ade333c38ecc0e60e94785125d9a52ca423b37 # v3
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+      - name: Push to GHCR
+        if: github.event_name != 'pull_request' && steps.changed.outputs.changed == 'true'
         id: push
-        env:
-          REGISTRY_USER: ${{ github.actor }}
-          REGISTRY_PASSWORD: ${{ github.token }}
+        uses: redhat-actions/push-to-registry@94ade333c38ecc0e60e94785125d9a52ca423b37 # v3.0.0
         with:
+          image: ${{ steps.build.outputs.image }}
+          tags: ${{ steps.build.outputs.tags }}
           registry: ${{ env.IMAGE_REGISTRY }}
-          image: ${{ env.IMAGE_NAME }}
-          tags: ${{ steps.metadata.outputs.tags }}
-          username: ${{ env.REGISTRY_USER }}
-          password: ${{ env.REGISTRY_PASSWORD }}
 
-      # This section is optional and only needs to be enabled if you plan on distributing
-      # your project for others to consume. You will need to create a public and private key
-      # using Cosign and save the private key as a repository secret in Github for this workflow
-      # to consume. For more details, review the image signing section of the README.
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-        with:
-          cosign-release: 'v3.1.2'
-
-      - name: Sign container image
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-        run: |
-          IMAGE_FULL="${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}"
-          for tag in ${{ steps.metadata.outputs.tags }}; do
-            cosign sign -y --key env://COSIGN_PRIVATE_KEY $IMAGE_FULL:$tag
-          done
+      # Legacy simple-signing mode: rpm-ostree and bootc still require that format,
+      # hence the pinned cosign 3.x and the explicit --new-bundle-format=false.
+      - name: Sign image
+        if: github.event_name != 'pull_request' && steps.changed.outputs.changed == 'true'
         env:
-          TAGS: ${{ steps.push.outputs.digest }}
-          COSIGN_EXPERIMENTAL: false
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # Both flags force the OLD signature bundle format, which is the only one
+          # containers/image and rpm-ostree can verify — so it is what makes the
+          # sigstoreSigned rule in 85-signing.sh's policy.json actually work:
+          #   https://github.com/containers/container-libs/issues/388
+          #   https://github.com/coreos/rpm-ostree/issues/5509
+          # Same invocation as ublue's image-template. cosign already warns that
+          # --new-bundle-format is deprecated and the new format "will be the only
+          # supported format in future versions", so this needs revisiting when the
+          # verifiers catch up; until then a cosign bump could silently produce
+          # signatures the installed system cannot check.
+          cosign sign -y \
+            --new-bundle-format=false \
+            --use-signing-config=false \
+            --key env://COSIGN_PRIVATE_KEY \
+            "${IMAGE_REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+
+      # Attach the package manifest to the pushed image as an OCI referrer so the next
+      # build can diff against it without pulling the whole image. Same mechanism ublue
+      # uses for its SBOM, but the payload is a ~200 KB package list instead of a 190 MB
+      # syft scan: bazzite:stable's SBOM measures 198,515,288 bytes because syft hashes
+      # every file in the image, while the only fields a changelog reads are name, version
+      # and sourceRpm. It also avoids syft's cost entirely - they must `podman export` the
+      # whole rootfs and untar it before scanning.
+      #
+      # Verified against a local registry using cosign v3.1.2, the version this pipeline
+      # pins: signing, then attaching a referrer of this artifactType, leaves
+      # `cosign verify --key` passing. So this does not repeat the referrers-fallback
+      # breakage that attest-build-provenance's push-to-registry: true caused, where a
+      # keyless sigstore bundle in the fallback index made cosign refuse the whole
+      # verification with "expected key signature, not certificate".
+      - name: Install ORAS
+        if: github.event_name != 'pull_request' && steps.changed.outputs.changed == 'true'
+        uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
+
+      - name: Attach package manifest
+        if: github.event_name != 'pull_request' && steps.changed.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # oras keeps its own credential store, so podman-login above does not cover it.
+          printf '%s' "${GH_TOKEN}" \
+            | oras login "${IMAGE_REGISTRY%%/*}" -u "${ACTOR}" --password-stdin
+          oras attach \
+            --artifact-type application/vnd.vespera.packages.v1+json \
+            --annotation filename=packages.json \
+            "${IMAGE_REGISTRY}/${IMAGE_NAME}@${DIGEST}" \
+            packages.json:application/json
+
+      - name: Attest provenance
+        if: github.event_name != 'pull_request' && steps.changed.outputs.changed == 'true'
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          # MUST stay false, which is also the default. With push-to-registry: true this
+          # action publishes the provenance bundle into the registry's OCI referrers
+          # fallback index — a bare `sha256-<digest>` tag holding an
+          # application/vnd.dev.sigstore.bundle.v0.3+json entry. That bundle is keyless
+          # (GitHub OIDC -> Fulcio certificate), so referrers-aware cosign enumerates it
+          # alongside our real signature and then refuses the whole verification:
+          #   Error: no matching attestations: expected key signature, not certificate
+          # which breaks `just verify` and `cosign verify --key cosign.pub` even though the
+          # cosign signature itself is valid (confirmed independently with
+          # `openssl dgst -verify` against the simple-signing payload).
+          #
+          # The attestation is not lost: it stays in GitHub's attestation store and is
+          # verified with `gh attestation verify --owner <owner> oci://<image>`. Only its
+          # registry copy is dropped. ublue's image-template attaches no attestation at
+          # all, so it never hit this.
+          push-to-registry: false
+
+
+  # Per-release package changelog, published as a GitHub Release. Separate job because it
+  # needs `contents: write` and a deep checkout, neither of which the build job should
+  # hold. ublue does the same thing in a separate generate_release workflow.
+  release:
+    name: Generate release
+    needs: build
+    # Three conditions, all necessary. Not on pull requests, because nothing is published.
+    # Only when the no-op gate actually published, otherwise a skipped day would produce an
+    # empty release for an image that never moved. And only on the default branch, because
+    # a branch build publishes just its branch tag - no dated tag exists to diff against.
+    if: >-
+      github.event_name != 'pull_request'
+      && needs.build.outputs.changed == 'true'
+      && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      # Reading the attached manifest works anonymously while the package is public, but
+      # relying on that would break silently the moment it is not.
+      packages: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          # The commit table is `git log <prev-revision>..<curr-revision>`, so both
+          # revisions must be in this clone. ublue uses 500 for the same reason; the
+          # default depth of 1 would make that section silently empty.
+          fetch-depth: 500
+
+      - name: Install ORAS
+        uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
+
+      - name: Log in to GHCR with ORAS
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${GH_TOKEN}" \
+            | oras login "${IMAGE_REGISTRY%%/*}" -u "${ACTOR}" --password-stdin
+
+      - name: Generate release notes
+        id: notes
+        env:
+          # IMAGE_REGISTRY and IMAGE_NAME come from the workflow-level env, which every job
+          # inherits; the script reads both from the environment.
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 .github/changelog.py "${VERSION}" ./output.env ./changelog.md --workdir .
+          # TITLE and TAG come back through a file rather than stdout so the script can
+          # print the whole body to the log without polluting the outputs.
+          source ./output.env
+          echo "title=${TITLE}" >>"$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >>"$GITHUB_OUTPUT"
+
+      - name: Create release
+        uses: softprops/action-gh-release@5113cdc90fd4d541c801c55356214017bf5ae34b # v3
+        with:
+          name: ${{ steps.notes.outputs.title }}
+          tag_name: ${{ steps.notes.outputs.tag }}
+          body_path: ./changelog.md
+          make_latest: true

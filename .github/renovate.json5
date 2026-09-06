@@ -1,37 +1,136 @@
+// Renovate configuration. Schema: https://docs.renovatebot.com/renovate-schema.json
 {
-  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": [
-    "config:best-practices"
+  extends: [
+    "config:recommended",
+    // Keep the noise down: one semantic commit type for everything Renovate does.
+    ":semanticCommitTypeAll(chore)",
+    // Only open PRs outside working hours so a rebuild is never racing a
+    // hand-triggered one.
+    "schedule:nonOfficeHours",
   ],
 
-  "forkProcessing": "enabled",
-  "dependencyDashboard": true,
-  "rebaseWhen": "never",
+  timezone: "America/Los_Angeles",
 
-  "packageRules": [
+  // Everything is pinned by digest. That is the whole point of pinning a bootc
+  // base: a rebuild today and a rebuild next month produce the same layers below
+  // ours, and the base bump becomes a reviewable commit instead of an invisible
+  // change in a floating tag.
+  pinDigests: true,
+
+  labels: ["dependencies"],
+  prConcurrentLimit: 5,
+  prHourlyLimit: 0,
+
+  // Renovate must not touch the extracted upstream trees or the research notes.
+  ignorePaths: [
+    "trees/**",
+    "build-test/**",
+    "docs/**",
+  ],
+
+  packageRules: [
+    // ------------------------------------------------------------------
+    // Base image: ghcr.io/ublue-os/kinoite-nvidia, tracked via its rolling
+    // `latest` tag. Digest bumps therefore include the day ublue promotes
+    // `latest` from Fedora N to N+1 — which is exactly how this repo follows
+    // Fedora with no manual edit.
+    //
+    // AUTOMERGED, but only on green CI. That is safe because of the failure
+    // model: the workflow builds first and pushes second, so a base that breaks
+    // the build leaves the PR red, publishes nothing, and leaves the running
+    // deployment on the last good image. `ignoreTests` is deliberately NOT set —
+    // requiring the full build to pass is the entire safety mechanism.
+    // ------------------------------------------------------------------
     {
-      "matchUpdateTypes": ["pin", "pinDigest"],
-      "automerge": true,
-      "ignoreTests": true
+      matchPackageNames: ["ghcr.io/ublue-os/kinoite-nvidia"],
+      matchUpdateTypes: ["digest"],
+      groupName: "base image",
+      commitMessageTopic: "kinoite-nvidia base",
+      automerge: true,
+      automergeType: "pr",
+      platformAutomerge: true,
+      schedule: ["after 4am and before 7am"],
+    },
+
+    // ------------------------------------------------------------------
+    // akmods has no rolling tag, so AKMODS_TAG names a Fedora release
+    // explicitly. Digest bumps within a release are automerged like the base.
+    //
+    // The main-44 -> main-45 move is the ONE annual manual edit in this repo.
+    // Renovate raises it on the dashboard rather than opening a PR, because it
+    // must land together with the base having actually crossed to F45; merging it
+    // early would break kmods. build_files/30-kmods.sh warns loudly (and does not
+    // fail the build) when the two disagree, so this cannot go unnoticed.
+    // ------------------------------------------------------------------
+    {
+      matchPackageNames: ["ghcr.io/ublue-os/akmods"],
+      matchUpdateTypes: ["digest"],
+      groupName: "akmods",
+      automerge: true,
+      automergeType: "pr",
+      platformAutomerge: true,
+      schedule: ["after 4am and before 7am"],
     },
     {
-      "description": "Automerge GitHub Actions digest updates in workflows",
-      "matchDatasources": ["github-tags"],
-      "matchFileNames": [".github/workflows/**"],
-      "matchUpdateTypes": ["digest", "pinDigest"],
-      "automerge": true,
-      "ignoreTests": true
+      matchPackageNames: ["ghcr.io/ublue-os/akmods"],
+      matchUpdateTypes: ["major", "minor"],
+      dependencyDashboardApproval: true,
+      addLabels: ["fedora-rebase", "manual"],
     },
+
+    // ------------------------------------------------------------------
+    // bootc-image-builder is referenced as a floating :latest in
+    // build-disk.yml on purpose — ISO builds are manual and infrequent, and the
+    // builder's fixes land fast. Nothing to pin.
+    // ------------------------------------------------------------------
     {
-      "description": "Automatically update Bazzite-Nvidia digests to match the latest build",
-      "matchDatasources": ["docker"],
-      "matchPackageNames": ["ghcr.io/ublue-os/bazzite-nvidia-open"],
-      "matchFileNames": ["Containerfile"],
-      "pinDigests": true,
-      "automerge": true,
-      "ignoreTests": true,
-      "commitMessagePrefix": "chore(deps): ",
-      "enabled": true 
-    }
-  ]
+      matchPackageNames: ["ghcr.io/osbuild/bootc-image-builder"],
+      enabled: false,
+    },
+
+    // ------------------------------------------------------------------
+    // GitHub Actions are pinned to commit SHAs (a tag like `v4` is mutable and
+    // is the standard vector for a compromised action). Renovate keeps the SHA
+    // current and rewrites the trailing `# vX` comment, so these are safe to
+    // automerge once CI is green.
+    // ------------------------------------------------------------------
+    {
+      matchManagers: ["github-actions"],
+      groupName: "github actions",
+      pinDigests: true,
+      automerge: true,
+      automergeType: "pr",
+      platformAutomerge: true,
+    },
+
+    // ------------------------------------------------------------------
+    // Nerd Fonts is pinned to an exact release tag in build_files/40-fonts.sh.
+    // Not automerged: a font release occasionally renames an archive, which
+    // only shows up as a build failure.
+    // ------------------------------------------------------------------
+    {
+      matchDepNames: ["ryanoasis/nerd-fonts"],
+      groupName: "nerd-fonts",
+      automerge: false,
+    },
+  ],
+
+  customManagers: [
+    {
+      // NERD_FONTS_VERSION="v3.4.0" in build_files/40-fonts.sh
+      customType: "regex",
+      managerFilePatterns: ["/^build_files/40-fonts\\.sh$/"],
+      matchStrings: ['NERD_FONTS_VERSION="(?<currentValue>v[^"]+)"'],
+      depNameTemplate: "ryanoasis/nerd-fonts",
+      datasourceTemplate: "github-releases",
+    },
+    // NOTE: cicpoffs is intentionally absent. ublue-os/cicpoffs publishes one
+    // rolling release tagged `master` with assets re-uploaded in place, so there
+    // is no version for Renovate to track. See build_files/20-packages-thirdparty.sh.
+  ],
+
+  // The dashboard issue is the single place to see what was deferred — Fedora
+  // rebases, in particular.
+  dependencyDashboard: true,
+  dependencyDashboardTitle: "Renovate: dependency dashboard",
 }

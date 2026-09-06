@@ -1,0 +1,24 @@
+# PROVENANCE: scheduler choices from Bazzite (desktop/shared/usr/lib/udev/rules.d/
+#   60-schedulers.rules); the SUBSYSTEM/DEVTYPE guards and the sd*[!0-9] pattern are
+#   ours.
+#
+# Overrides systemd-udev's 60-block-scheduler.rules, which sets bfq on every
+# mmcblk*/sd*/sr* disk and does not touch NVMe. That file says "do not edit ... will
+# be overwritten on update", so a later-sorting file is the supported way to
+# disagree, and 60-schedulers sorts after 60-block-scheduler.
+#
+# DO NOT RENUMBER ABOVE 64. 64-btrfs-zoned.rules forces mq-deadline on host-managed
+# zoned devices — the only scheduler supporting zone write locking — and must keep
+# winning.
+#
+# kyber on solid state: low overhead, latency-targeting, keeps reads bounded while a
+# game installs or shaders compile. bfq on rotational, matching Fedora.
+
+ACTION=="add|change", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", \
+  KERNEL=="sd*[!0-9]", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="kyber"
+
+ACTION=="add|change", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", \
+  KERNEL=="nvme[0-9]*n[0-9]*", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="kyber"
+
+ACTION=="add|change", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", \
+  KERNEL=="sd*[!0-9]", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="bfq"
