@@ -29,7 +29,7 @@
 # share one ARG between two FROMs.
 #
 ARG BASE_IMAGE="ghcr.io/ublue-os/kinoite-nvidia"
-ARG BASE_TAG="latest"
+ARG BASE_TAG="latest@sha256:9ed036dd74e4b05e106febf2d0b7887afb590f0a583be380ae36582863af5598"
 
 # akmods ships prebuilt, MOK-signed out-of-tree modules built against the *exact*
 # kernel in the base. A scratch image with no shell — the RPMs are bind-mounted below.
@@ -42,7 +42,7 @@ ARG BASE_TAG="latest"
 # version of these RPMs against the base's and warns loudly, naming this line. It does
 # NOT fail the build — a stale akmods costs only the virtual-camera module.
 ARG AKMODS_IMAGE="ghcr.io/ublue-os/akmods"
-ARG AKMODS_TAG="main-44"
+ARG AKMODS_TAG="main-44@sha256:540321cd54cba40c180135fba2eda7d13937a40a76582fcbf51eb0c43b2af6e4"
 FROM ${AKMODS_IMAGE}:${AKMODS_TAG} AS akmods
 
 FROM scratch AS ctx
