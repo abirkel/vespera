@@ -43,7 +43,7 @@
     // ------------------------------------------------------------------
     {
       matchPackageNames: ["ghcr.io/ublue-os/kinoite-nvidia"],
-      matchUpdateTypes: ["digest"],
+      matchUpdateTypes: ["digest", "pinDigest"],
       groupName: "base image",
       commitMessageTopic: "kinoite-nvidia base",
       automerge: true,
@@ -64,7 +64,7 @@
     // ------------------------------------------------------------------
     {
       matchPackageNames: ["ghcr.io/ublue-os/akmods"],
-      matchUpdateTypes: ["digest"],
+      matchUpdateTypes: ["digest", "pinDigest"],
       groupName: "akmods",
       automerge: true,
       automergeType: "pr",
