@@ -91,7 +91,7 @@ CHANGELOG_FORMAT = """\
 Automatically generated changelog for `{curr}`.
 
 Changes since `{prev}`.
-
+{base_image}
 ### Headline packages
 | Name | Version |
 | --- | --- |
@@ -193,6 +193,26 @@ def source_of(doc):
         if art.get("name"):
             out[art["name"]] = srpm
     return out
+
+
+def base_image_of(doc):
+    """(name, version) of the base image this manifest's build ran on, or (None, None)
+    for a manifest from before base_image/base_version were recorded."""
+    source = doc.get("source", {})
+    return source.get("base_image"), source.get("base_version")
+
+
+def build_base_image_line(prev_doc, curr_doc):
+    """Base image name/version, shown unconditionally like the headline table — an
+    arrow when it moved, just the current value when it did not. Empty only when the
+    current manifest predates this field entirely."""
+    prev_name, prev_version = base_image_of(prev_doc)
+    curr_name, curr_version = base_image_of(curr_doc)
+    if not curr_name or not curr_version:
+        return ""
+    if not prev_version or prev_version == curr_version:
+        return f"\n**Base image:** {curr_name} `{curr_version}`\n"
+    return f"\n**Base image:** {curr_name} `{prev_version}` ➡️ `{curr_version}`\n"
 
 
 def normalise(versions: dict):
@@ -309,11 +329,17 @@ def main():
     if prev_tag is None:
         # First dated build, or the first one carrying a manifest. Publish the headline
         # versions and say so, rather than inventing a diff against nothing.
+        curr_base_name, curr_base_version = base_image_of(curr_doc)
+        base_line = (
+            f"\n**Base image:** {curr_base_name} `{curr_base_version}`\n"
+            if curr_base_name and curr_base_version else ""
+        )
         body = (
             f"Automatically generated changelog for `{curr_tag}`.\n\n"
             "First published build with a package manifest attached, so there is no "
             "previous image to compare against. Package changes will be listed from the "
-            "next build onward.\n\n"
+            "next build onward.\n"
+            f"{base_line}\n"
             "### Headline packages\n| Name | Version |\n| --- | --- |\n"
             + build_headline({}, curr)
             + "\n"
@@ -342,6 +368,7 @@ def main():
         body = (
             CHANGELOG_FORMAT.replace("{headline}", build_headline(prev, curr))
             .replace("{changes}", changes)
+            .replace("{base_image}", build_base_image_line(prev_doc, curr_doc))
             .replace("{imageref}", f"{REGISTRY}/{IMAGE}")
             .replace("{prev}", prev_tag)
             .replace("{curr}", curr_tag)

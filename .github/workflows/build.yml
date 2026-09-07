@@ -300,13 +300,24 @@ jobs:
             >pkgs.tsv
           echo "packages in image: $(wc -l <pkgs.tsv)"
 
+          # Base image identity, for the changelog to report separately from our own
+          # package churn — written by 80-image-info.sh from the base's own
+          # OSTREE_VERSION, so this is the base's build date, not ours.
+          podman run --rm --entrypoint /usr/bin/bash \
+            "localhost/${IMAGE_NAME}:${FIRST}" \
+            -c 'jq -r "\"\(.[\"base-image-name\"])\t\(.[\"ostree-version\"])\"" /usr/share/ublue-os/image-info.json' \
+            >base.tsv
+          BASE_IMAGE_NAME="$(cut -f1 base.tsv)"
+          BASE_IMAGE_VERSION="$(cut -f2 base.tsv)"
+          echo "base image: ${BASE_IMAGE_NAME} ${BASE_IMAGE_VERSION}"
+
           NEW="$(cut -f5 pkgs.tsv | LC_ALL=C sort | sha256sum | cut -d' ' -f1)"
           echo "built image package fingerprint: ${NEW}"
           echo "fingerprint=${NEW}" >>"$GITHUB_OUTPUT"
 
           # A syft-json-compatible subset: syft names these fields identically, so the
           # ublue parsing helpers work on it unchanged.
-          python3 - "${VERSION}" >packages.json <<'PY'
+          python3 - "${VERSION}" "${BASE_IMAGE_NAME}" "${BASE_IMAGE_VERSION}" >packages.json <<'PY'
           import json, sys
           arts = []
           for line in open("pkgs.tsv"):
@@ -321,7 +332,8 @@ jobs:
                   "metadata": {"sourceRpm": srpm},
               })
           arts.sort(key=lambda a: (a["name"], a["version"]))
-          json.dump({"source": {"name": "vespera", "version": sys.argv[1]},
+          json.dump({"source": {"name": "vespera", "version": sys.argv[1],
+                                 "base_image": sys.argv[2], "base_version": sys.argv[3]},
                      "artifacts": arts}, sys.stdout)
           PY
           echo "manifest bytes: $(stat -c%s packages.json)"
