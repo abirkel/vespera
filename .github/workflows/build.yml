@@ -303,9 +303,10 @@ jobs:
           # Base image identity, for the changelog to report separately from our own
           # package churn — written by 80-image-info.sh from the base's own
           # OSTREE_VERSION, so this is the base's build date, not ours.
+          BASE_INFO_JQ='"\(.["base-image-name"])\t\(.["ostree-version"])"'
           podman run --rm --entrypoint /usr/bin/bash \
             "localhost/${IMAGE_NAME}:${FIRST}" \
-            -c 'jq -r "\"\(.[\"base-image-name\"])\t\(.[\"ostree-version\"])\"" /usr/share/ublue-os/image-info.json' \
+            -c "jq -r '${BASE_INFO_JQ}' /usr/share/ublue-os/image-info.json" \
             >base.tsv
           BASE_IMAGE_NAME="$(cut -f1 base.tsv)"
           BASE_IMAGE_VERSION="$(cut -f2 base.tsv)"
