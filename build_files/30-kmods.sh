@@ -64,7 +64,9 @@ else
     else
         printf '\n' >&2
         printf 'kmod-v4l2loopback builds present in the akmods image:\n' >&2
-        ls -1 "${AKMODS_RPMS}/kmods/" 2>/dev/null | grep -i v4l2loopback | sed 's/^/  /' >&2 || true
+        for f in "${AKMODS_RPMS}/kmods/"*v4l2loopback*; do
+            [[ -e "${f}" ]] && printf '  %s\n' "${f##*/}" >&2
+        done
         printf '\n' >&2
         die "no kmod-v4l2loopback build for kernel ${KVER}; virtual camera would be
   missing. Looked for: ${AKMODS_RPMS}/kmods/kmod-v4l2loopback-${KVER}-*.rpm
