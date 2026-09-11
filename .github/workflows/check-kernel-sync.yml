@@ -1,0 +1,94 @@
+---
+name: Check base/akmods kernel sync
+on:
+  pull_request:
+    branches: [main]
+    paths: ['Containerfile']
+
+# Fast, cheap pre-check for PRs that touch Containerfile, in practice almost always a
+# Renovate digest bump on BASE_TAG or AKMODS_TAG. Skips the ~20+ minute full image build
+# just to answer one question: does the akmods image pinned here ship kmods for the same
+# kernel the base image pinned here runs?
+#
+# WHY THIS EXISTS: AKMODS_TAG and BASE_TAG are bumped independently by separate Renovate
+# rules (see .github/renovate.json5). Both can point at Fedora 44 and still disagree on
+# the exact kernel build, since akmods and kinoite-nvidia are rebuilt on independent
+# schedules upstream. build_files/30-kmods.sh already fails the full build on this exact
+# mismatch, so this job does not change what merges, it only surfaces the same failure
+# in seconds instead of after a full build, and names the mismatch directly instead of
+# requiring a dig through build logs.
+#
+# HOW: both ghcr.io/ublue-os/kinoite-nvidia and ghcr.io/ublue-os/akmods stamp an
+# `ostree.linux` config label with the exact kernel-core version they ship or were built
+# against. Reading that label via `skopeo inspect --config` needs no image pull.
+#
+# Only runs on PRs that touch Containerfile. Scheduled daily builds, ordinary pushes,
+# and PRs that do not touch Containerfile never trigger this at all.
+
+permissions: {}
+
+jobs:
+  check:
+    name: Compare kernel versions
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install skopeo
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
+
+      - name: Read pinned refs from Containerfile
+        id: tags
+        run: |
+          base_tag="$(grep -oP '^ARG BASE_TAG="\K[^"]+' Containerfile)"
+          akmods_tag="$(grep -oP '^ARG AKMODS_TAG="\K[^"]+' Containerfile)"
+          base_image="$(grep -oP '^ARG BASE_IMAGE="\K[^"]+' Containerfile)"
+          akmods_image="$(grep -oP '^ARG AKMODS_IMAGE="\K[^"]+' Containerfile)"
+
+          # Both ARGs are pinned as tag@sha256:digest. skopeo will not take a ref with
+          # both a tag and a digest, so use the digest alone, it is the authoritative
+          # part of the pin anyway.
+          base_digest="${base_tag##*@}"
+          akmods_digest="${akmods_tag##*@}"
+
+          echo "base_ref=${base_image}@${base_digest}" >> "${GITHUB_OUTPUT}"
+          echo "akmods_ref=${akmods_image}@${akmods_digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Compare kernel versions
+        env:
+          BASE_REF: ${{ steps.tags.outputs.base_ref }}
+          AKMODS_REF: ${{ steps.tags.outputs.akmods_ref }}
+        run: |
+          set -euo pipefail
+
+          echo "Base image ref  : ${BASE_REF}"
+          echo "Akmods image ref: ${AKMODS_REF}"
+
+          # Both images stamp the kernel they run/were built against in the
+          # ostree.linux config label. Reading it needs only the config blob, not
+          # the image itself.
+          base_kver="$(
+            skopeo inspect --config "docker://${BASE_REF}" \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin).get("config",{}).get("Labels",{}).get("ostree.linux",""))'
+          )"
+          akmods_kver="$(
+            skopeo inspect --config "docker://${AKMODS_REF}" \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin).get("config",{}).get("Labels",{}).get("ostree.linux",""))'
+          )"
+
+          echo "base image kernel  : ${base_kver:-<ostree.linux label not found>}"
+          echo "akmods image kernel: ${akmods_kver:-<ostree.linux label not found>}"
+
+          if [[ -z "${base_kver}" || -z "${akmods_kver}" ]]; then
+            echo "::warning::Could not read ostree.linux from one or both images. Falling back to the full build to verify."
+            exit 0
+          fi
+
+          if [[ "${base_kver}" != "${akmods_kver}" ]]; then
+            echo "::error::Kernel mismatch. Base image (${BASE_REF}) ships kernel ${base_kver}, but akmods (${AKMODS_REF}) is built for kernel ${akmods_kver}. The full build will fail on this (build_files/30-kmods.sh requires an exact match for v4l2loopback). Either wait for the base image to catch up, or pin AKMODS_TAG back to a digest matching ${base_kver}."
+            exit 1
+          fi
+
+          echo "Kernel versions match (${base_kver}). Safe to proceed to the full build."

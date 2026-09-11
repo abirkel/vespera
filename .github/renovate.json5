@@ -59,8 +59,16 @@
     // The main-44 -> main-45 move is the ONE annual manual edit in this repo.
     // Renovate raises it on the dashboard rather than opening a PR, because it
     // must land together with the base having actually crossed to F45; merging it
-    // early would break kmods. build_files/30-kmods.sh warns loudly (and does not
-    // fail the build) when the two disagree, so this cannot go unnoticed.
+    // early would break kmods.
+    //
+    // A digest bump WITHIN main-44 can still disagree with the base on the exact
+    // kernel build even though both are Fedora 44 (akmods and kinoite-nvidia are
+    // rebuilt on independent schedules). v4l2loopback is a required driver, so
+    // build_files/30-kmods.sh FAILS the build on any mismatch, Fedora release or
+    // kernel build. That failure, not this automerge rule, is the actual safety
+    // mechanism: a bad akmods bump merges but leaves the workflow red and pushes
+    // nothing, same failure model as the base image rule above. Re-dispatch once
+    // the base image's own next rebuild lands the matching kernel.
     // ------------------------------------------------------------------
     {
       matchPackageNames: ["ghcr.io/ublue-os/akmods"],
