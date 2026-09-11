@@ -67,6 +67,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          # Needed so the "Decide whether the image changed" step can git diff a push
+          # event's before..after range to see which files actually changed. 2 is enough
+          # for a normal single-commit push; Renovate PRs sometimes land as a 1-commit
+          # squash merge too. If a push carries more commits than this, the diff command
+          # below still fails safely open (treated as "unknown", always publishes) rather
+          # than silently comparing the wrong range.
+          fetch-depth: 50
 
       # `just` is the only tool this workflow needs that the runner image lacks.
       # Verified against the ubuntu-24.04 manifest: Podman 5.8.4, Buildah 1.33.7,
@@ -262,22 +269,31 @@ jobs:
       # image, and the apps themselves are pulled on the desktop at first boot and updated
       # thereafter by flatpak-system-update.timer, so they can never churn the image.
       #
-      # SCHEDULE ONLY. A push can change file content (system_files, hooks, kargs) without
-      # changing a single NEVRA, so pushes must always publish. On a scheduled run the repo
-      # is byte-identical to the last build, which is exactly why a package fingerprint is
-      # sufficient there.
+      # SCHEDULE AND PUSH, with an extra guard on push. A push can change file content
+      # (system_files, hooks, kargs) without changing a single NEVRA, so a push that
+      # touches anything other than Containerfile still always publishes. But the
+      # overwhelming majority of pushes to main are Renovate automerges that touch
+      # ONLY Containerfile's ARG lines (a digest bump), and those are exactly the source
+      # of the config-only, zero-package "no changes" releases this gate exists to catch
+      # in the first place — see 44.20260908.2 and 44.20260910.2 in the release history,
+      # both "No package changes; this build differs only in configuration" despite being
+      # push-triggered, which the old EVENT_NAME != schedule check let straight through.
       #
       # Blind spots, both accepted: the Microsoft core fonts are fetched .cab files
       # extracted with cabextract, so they carry no NEVRA at all, and cicpoffs comes from a
       # rolling `master` release whose asset is replaced in place, so its NEVRA can stay
-      # cicpoffs-0.3-1.fc44 while the binary changes. Any push or manual dispatch covers
-      # both.
+      # cicpoffs-0.3-1.fc44 while the binary changes. Neither is touched by a
+      # Containerfile-only digest bump, so this guard does not widen either blind spot.
+      # A manual workflow_dispatch always publishes, as an explicit "ship it now" escape
+      # hatch regardless of what the fingerprint says.
       - name: Decide whether the image changed
         id: changed
         env:
           EVENT_NAME: ${{ github.event_name }}
           TAGS: ${{ steps.tags.outputs.tags }}
           VERSION: ${{ steps.version.outputs.version }}
+          EVENT_BEFORE: ${{ github.event.before }}
+          EVENT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           read -r -a tag_list <<<"${TAGS}"
@@ -339,14 +355,46 @@ jobs:
           PY
           echo "manifest bytes: $(stat -c%s packages.json)"
 
-          if [[ "${EVENT_NAME}" != "schedule" ]]; then
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
             echo "changed=true" >>"$GITHUB_OUTPUT"
-            echo "::notice title=Publishing::${EVENT_NAME} run - always publishes."
+            echo "::notice title=Publishing::manual dispatch - always publishes."
             exit 0
           fi
 
-          # Scheduled runs only ever happen on the default branch, so the tag to compare
-          # against is always DEFAULT_TAG.
+          if [[ "${EVENT_NAME}" == "push" ]]; then
+            # Only Containerfile may have changed for the fingerprint check to apply.
+            # A push event's "before" SHA is the tip before this push, exactly what
+            # changed. Checkout above fetches enough history for the normal case; if the
+            # before SHA is still not present (deeper history than fetch-depth covers,
+            # or a brand new branch with an all-zero before SHA), fail open to always
+            # publishing rather than guessing.
+            before_ok=0
+            if [[ -n "${EVENT_BEFORE}" ]] \
+               && [[ "${EVENT_BEFORE}" != "0000000000000000000000000000000000000000" ]] \
+               && git cat-file -e "${EVENT_BEFORE}" 2>/dev/null; then
+              before_ok=1
+            fi
+
+            if [[ "${before_ok}" == "1" ]]; then
+              CHANGED_FILES="$(git diff --name-only "${EVENT_BEFORE}" "${EVENT_SHA}")"
+            else
+              echo "::notice::before-commit not available for diff; treating as unknown."
+              CHANGED_FILES=$'Containerfile\nunknown'
+            fi
+            OTHER_FILES="$(printf '%s\n' "${CHANGED_FILES}" \
+              | grep -v '^Containerfile$' | grep -v '^$' || true)"
+            if [[ -n "${OTHER_FILES}" ]]; then
+              echo "changed=true" >>"$GITHUB_OUTPUT"
+              MSG="push touches files besides Containerfile, always publishes:"
+              MSG="${MSG} $(printf '%s' "${OTHER_FILES}" | tr '\n' ' ')"
+              echo "::notice title=Publishing::${MSG}"
+              exit 0
+            fi
+            echo "push touches only Containerfile (or nothing); checking fingerprint."
+          fi
+
+          # Compare against the currently published DEFAULT_TAG image either way: both a
+          # schedule run and a Containerfile-only push are comparable to what is live.
           REF="docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}"
           OLD="$(skopeo inspect "${REF}" 2>/dev/null \
                  | jq -r '.Labels["dev.vespera.pkg-fingerprint"] // ""' || true)"

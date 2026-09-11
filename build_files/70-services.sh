@@ -117,6 +117,38 @@ grep -q '^AutomaticUpdatePolicy=stage' /etc/rpm-ostreed.conf \
     || warn "AutomaticUpdatePolicy is not 'stage'; Discover staging will not work"
 
 # ---------------------------------------------------------------------------
+# Update check cadence: weekly, not the base's daily default.
+#
+# The base's rpm-ostreed-automatic.timer.d/override.conf (from ublue-os-update-services)
+# fires every day at 04:00. That is a fine default for a fleet, but vespera is a
+# single-user daily driver whose own build pipeline (build.yml) can itself publish
+# several times in one day — a Renovate digest bump, a manual fix, and the daily
+# schedule all landing the same day is common, not rare. Staging every one of those on
+# this exact cadence means a "restart to apply" prompt appears far more often than the
+# actual content justifies; several recent releases carried zero package changes at
+# all (see the "Decide whether the image changed" step in build.yml, which now also
+# suppresses those no-op pushes at the source).
+#
+# This drop-in layers on TOP of the base's, since systemd drop-ins merge rather than
+# replace: [Timer] here fully overrides the base's [Timer] section (last one wins for
+# each directive), landing at once a week instead of once a day. RandomizedDelaySec and
+# Persistent are kept, matching the base's own choices, so a missed check still catches
+# up shortly after boot rather than waiting a full week.
+#
+# This governs when a new deployment gets STAGED, not whether vespera keeps building or
+# publishing daily — CI is unaffected. Removing this file (or running
+# `sudo systemctl revert rpm-ostreed-automatic.timer`) restores the base's daily cadence.
+# ---------------------------------------------------------------------------
+install -Dm0644 /dev/stdin \
+    /usr/lib/systemd/system/rpm-ostreed-automatic.timer.d/50-vespera-weekly.conf <<'EOF'
+[Timer]
+OnCalendar=Sat *-*-* 04:00:00
+RandomizedDelaySec=10m
+Persistent=true
+EOF
+info "rpm-ostreed-automatic.timer: overridden to weekly (Saturdays 04:00, +/-10m)"
+
+# ---------------------------------------------------------------------------
 # Do NOT mask fedora-atomic-desktop-appstream-cache-refresh.service. Bazzite masks it
 # because Bazaar handles its own metadata; Discover needs that cache or its catalogue is
 # empty. Asserted so a future change cannot break Discover silently.
