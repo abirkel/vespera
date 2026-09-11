@@ -71,23 +71,29 @@ jobs:
           # the image itself.
           base_kver="$(
             skopeo inspect --config "docker://${BASE_REF}" \
-              | python3 -c 'import json,sys; print(json.load(sys.stdin).get("config",{}).get("Labels",{}).get("ostree.linux",""))'
+              | python3 .github/scripts/read-ostree-linux-label.py
           )"
           akmods_kver="$(
             skopeo inspect --config "docker://${AKMODS_REF}" \
-              | python3 -c 'import json,sys; print(json.load(sys.stdin).get("config",{}).get("Labels",{}).get("ostree.linux",""))'
+              | python3 .github/scripts/read-ostree-linux-label.py
           )"
 
           echo "base image kernel  : ${base_kver:-<ostree.linux label not found>}"
           echo "akmods image kernel: ${akmods_kver:-<ostree.linux label not found>}"
 
           if [[ -z "${base_kver}" || -z "${akmods_kver}" ]]; then
-            echo "::warning::Could not read ostree.linux from one or both images. Falling back to the full build to verify."
+            echo "::warning::Could not read ostree.linux from one or both images." \
+              "Falling back to the full build to verify."
             exit 0
           fi
 
           if [[ "${base_kver}" != "${akmods_kver}" ]]; then
-            echo "::error::Kernel mismatch. Base image (${BASE_REF}) ships kernel ${base_kver}, but akmods (${AKMODS_REF}) is built for kernel ${akmods_kver}. The full build will fail on this (build_files/30-kmods.sh requires an exact match for v4l2loopback). Either wait for the base image to catch up, or pin AKMODS_TAG back to a digest matching ${base_kver}."
+            echo "::error::Kernel mismatch. Base image (${BASE_REF}) ships kernel" \
+              "${base_kver}, but akmods (${AKMODS_REF}) is built for kernel" \
+              "${akmods_kver}. The full build will fail on this" \
+              "(build_files/30-kmods.sh requires an exact match for v4l2loopback)." \
+              "Either wait for the base image to catch up, or pin AKMODS_TAG back" \
+              "to a digest matching ${base_kver}."
             exit 1
           fi
 
