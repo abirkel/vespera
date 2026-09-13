@@ -57,6 +57,10 @@ ARG IMAGE_NAME="vespera"
 ARG IMAGE_VENDOR="abirkel"
 ARG IMAGE_REGISTRY="ghcr.io/abirkel"
 ARG VERSION_TAG=""
+# The always-built tag for this run (testing on the daily/CI path; latest only ever
+# moves via promote.yml, never via a build). Recorded into image-info.json so
+# rebase-helper style tooling knows which stream produced this image.
+ARG IMAGE_TAG="testing"
 # Opt-in extras. Set to 0 in the workflow to skip.
 ARG ENABLE_MSFONTS="1"
 ARG ENABLE_YEETMOUSE="1"

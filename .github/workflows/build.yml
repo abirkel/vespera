@@ -30,7 +30,11 @@ env:
   IMAGE_NAME: vespera
   IMAGE_REGISTRY: ghcr.io/${{ github.repository_owner }}
   IMAGE_DESC: "Fedora Kinoite with NVIDIA, gaming and light development tooling"
-  DEFAULT_TAG: latest
+  # `testing` is the always-building stream: every push, schedule and dispatch lands
+  # here. `latest`, the desktop-facing stream, only moves when promote.yml re-points
+  # it at a `testing` digest — weekly by default, sooner on a qualifying content
+  # change, or on demand via workflow_dispatch. See promote.yml.
+  DEFAULT_TAG: testing
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -141,9 +145,11 @@ jobs:
             TAGS="pr-${PR_NUMBER}"
           elif [[ "${REF_NAME}" != "${DEFAULT_BRANCH}" ]]; then
             # A NON-DEFAULT ref publishes under its branch name and nothing else.
-            # `latest` must only ever come from the default branch: installed machines
-            # follow that tag, and on this fleet uupd applies it automatically, so a
-            # trial build reaching `latest` would rebase real hardware unattended.
+            # `testing` must only ever come from the default branch: it's the tag every
+            # build lands on, and a trial build reaching it would be indistinguishable
+            # from a real one. `latest`, the tag installed machines actually track, is
+            # never touched here at all — only promote.yml ever moves it, by re-tagging
+            # an already-published `testing` digest, never by building.
             # Sanitised because a Docker tag allows only [A-Za-z0-9._-], max 128 chars,
             # and must not start with . or - (branch names like renovate/foo would
             # otherwise produce an invalid tag).
@@ -226,6 +232,7 @@ jobs:
             IMAGE_VENDOR=${{ github.repository_owner }}
             IMAGE_REGISTRY=${{ env.IMAGE_REGISTRY }}
             VERSION_TAG=${{ steps.version.outputs.version }}
+            IMAGE_TAG=${{ env.DEFAULT_TAG }}
           # image.revision is what makes the changelog's commit table possible: it turns a
           # pair of published images into `git log <prev-revision>..<curr-revision>`, the
           # same mechanism ublue uses. Without it that section is silently empty.

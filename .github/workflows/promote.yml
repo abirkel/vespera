@@ -1,0 +1,207 @@
+---
+name: Promote to latest
+on:
+  # After every completed build.yml run. Gated below on conclusion == success, so a
+  # failed or skipped build never reaches the content check.
+  workflow_run:
+    workflows: ["Build image"]
+    types: [completed]
+  # Weekly floor: even if nothing ever triggers the workflow_run path (e.g. a long
+  # run of schedule-only builds with no push), latest is still checked once a week.
+  # Off the exact hour for the same reason build.yml's own cron is: GitHub's scheduler
+  # is most congested at :00.
+  schedule:
+    - cron: '30 8 * * 6'
+  # Explicit "promote now" escape hatch, matching Bluefin's own documented behaviour
+  # ("most images are published weekly, but we may push a new update at any given
+  # time"). force=true skips the content gate entirely.
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Promote even if the content gate finds nothing headline-worthy"
+        type: boolean
+        default: false
+
+env:
+  IMAGE_NAME: vespera
+  IMAGE_REGISTRY: ghcr.io/${{ github.repository_owner }}
+  ARTIFACT_TYPE: application/vnd.vespera.packages.v1+json
+  # testing: builds land here on every push/schedule/dispatch (see build.yml).
+  # latest: what installed machines track; only this workflow ever moves it.
+  SOURCE_TAG: testing
+  TARGET_TAG: latest
+
+concurrency:
+  group: promote-${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  promote:
+    name: Promote testing to latest
+    runs-on: ubuntu-24.04
+    # Three ways in. workflow_run must have actually succeeded; the other two
+    # (schedule, workflow_dispatch) are unconditional by nature.
+    if: >-
+      github.event_name != 'workflow_run'
+      || github.event.workflow_run.conclusion == 'success'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Log in to GHCR (podman/skopeo)
+        uses: redhat-actions/podman-login@50c2d9a331bb67c8fdab99b86455fad05e2e3252 # v2.0
+        with:
+          registry: ${{ env.IMAGE_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install ORAS
+        uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
+
+      - name: Log in to GHCR (oras)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          # oras keeps its own credential store, separate from the podman-login step
+          # above (same gotcha build.yml's "Attach package manifest" step documents).
+          printf '%s' "${GH_TOKEN}" \
+            | oras login "${IMAGE_REGISTRY%%/*}" -u "${ACTOR}" --password-stdin
+
+      # The content gate. Compares the package manifest already attached to :testing
+      # against the one attached to :latest — the same OCI referrer build.yml's
+      # "Attach package manifest" step writes on every publish, so this needs no new
+      # data, no image pull, and no rebuild.
+      #
+      # HEADLINE set matches .github/changelog.py's HEADLINE_PKGS exactly (kernel, KDE,
+      # Mesa, Nvidia, Podman, Bootc, Flatpak, OSTree, RPM-OSTree) plus the base image
+      # name/version recorded in the manifest's "source" object. Anything outside that
+      # set (a leaf library bump, a config-only digest bump) does not trigger a
+      # promotion on its own; the weekly schedule trigger is what eventually picks
+      # those up in aggregate.
+      - name: Compare testing against latest
+        id: gate
+        run: |
+          set -euo pipefail
+
+          fetch_manifest_json() {
+            local tag="$1" digest artifact_digest workdir
+            digest="$(skopeo inspect \
+                "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${tag}" 2>/dev/null \
+              | jq -r '.Digest // empty')"
+            [[ -n "${digest}" ]] || { echo ""; return; }
+            artifact_digest="$(
+              oras discover --format json "${IMAGE_REGISTRY}/${IMAGE_NAME}@${digest}" \
+                | jq -r --arg t "${ARTIFACT_TYPE}" \
+                    '.manifests[]? | select(.artifactType == $t) | .digest' \
+                | head -1
+            )"
+            [[ -n "${artifact_digest}" ]] || { echo ""; return; }
+            workdir="$(mktemp -d)"
+            oras pull "${IMAGE_REGISTRY}/${IMAGE_NAME}@${artifact_digest}" \
+              -o "${workdir}" >/dev/null
+            find "${workdir}" -name '*.json' -print -quit
+          }
+
+          TESTING_JSON="$(fetch_manifest_json "${SOURCE_TAG}")"
+          LATEST_JSON="$(fetch_manifest_json "${TARGET_TAG}")"
+
+          if [[ -z "${TESTING_JSON}" ]]; then
+            echo "::error::could not find a package manifest on :${SOURCE_TAG}"
+            exit 1
+          fi
+          if [[ -z "${LATEST_JSON}" ]]; then
+            echo "::notice::no :${TARGET_TAG} tag published yet; first promotion always proceeds."
+            echo "promote=true" >>"$GITHUB_OUTPUT"
+            echo "reason=first promotion (no ${TARGET_TAG} tag exists yet)" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          python3 - "${TESTING_JSON}" "${LATEST_JSON}" <<'PY' >>"$GITHUB_OUTPUT"
+          import json, sys
+
+          HEADLINE_PKGS = {
+              "kernel-core", "plasma-desktop", "mesa-filesystem", "nvidia-driver",
+              "podman", "bootc", "flatpak", "ostree", "rpm-ostree",
+          }
+
+          def load(path):
+              with open(path) as f:
+                  return json.load(f)
+
+          testing, latest = load(sys.argv[1]), load(sys.argv[2])
+
+          def versions(doc):
+              out = {}
+              for art in doc.get("artifacts", []):
+                  if art.get("type") == "rpm" and art.get("name"):
+                      out[art["name"]] = art.get("version")
+              return out
+
+          tv, lv = versions(testing), versions(latest)
+          changed_headline = sorted(
+              n for n in HEADLINE_PKGS
+              if tv.get(n) != lv.get(n)
+          )
+
+          t_base = testing.get("source", {}).get("base_version")
+          l_base = latest.get("source", {}).get("base_version")
+          base_changed = t_base != l_base
+
+          if changed_headline or base_changed:
+              reasons = []
+              if base_changed:
+                  reasons.append(f"base image {l_base} -> {t_base}")
+              if changed_headline:
+                  reasons.append("headline packages changed: " + ", ".join(changed_headline))
+              print("promote=true")
+              print(f"reason={'; '.join(reasons)}")
+          else:
+              print("promote=false")
+              print("reason=no base image or headline package change since last promotion")
+          PY
+
+      - name: Report gate result
+        run: |
+          echo "::notice title=Content gate::${{ steps.gate.outputs.reason }}"
+
+      # force=true (workflow_dispatch only) bypasses the gate entirely — the explicit
+      # "promote now" escape hatch. Every other trigger respects the gate's verdict.
+      - name: Decide whether to promote
+        id: decide
+        env:
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
+          GATE_PROMOTE: ${{ steps.gate.outputs.promote }}
+        run: |
+          set -euo pipefail
+          if [[ "${FORCE}" == "true" ]]; then
+            echo "do_promote=true" >>"$GITHUB_OUTPUT"
+            echo "::notice title=Promoting::forced via workflow_dispatch (force=true)."
+          elif [[ "${GATE_PROMOTE}" == "true" ]]; then
+            echo "do_promote=true" >>"$GITHUB_OUTPUT"
+            echo "::notice title=Promoting::content gate found a qualifying change."
+          else
+            echo "do_promote=false" >>"$GITHUB_OUTPUT"
+            MSG="content gate found nothing headline-worthy; ${TARGET_TAG} unchanged."
+            echo "::notice title=Skipping::${MSG}"
+          fi
+
+      # Promotion itself is a re-tag, not a rebuild: testing already exists, signed and
+      # attested, so this just points latest at the same digest and re-pushes the
+      # manifest under the new tag. skopeo copy preserves the manifest digest, layers,
+      # and any OCI referrers (the package manifest, the attestation) — nothing here
+      # needs to be regenerated.
+      - name: Promote testing to latest
+        if: steps.decide.outputs.do_promote == 'true'
+        run: |
+          set -euo pipefail
+          skopeo copy \
+            "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${SOURCE_TAG}" \
+            "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${TARGET_TAG}"
+          NEW_DIGEST="$(skopeo inspect \
+              "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${TARGET_TAG}" \
+            | jq -r '.Digest')"
+          echo "::notice title=Promoted::${TARGET_TAG} now points at ${NEW_DIGEST}"

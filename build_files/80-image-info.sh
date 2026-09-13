@@ -12,6 +12,13 @@
 # hand-written one claiming to be ublue-os/bazzite-nvidia-open, which is the failure
 # mode this avoids.
 #
+# KNOWN LIMITATION: "image-tag" here always reads the stream that BUILT this image
+# (testing), never latest. promote.yml re-tags an already-built testing digest onto
+# latest without rebuilding — that's the entire point, it avoids a second build for
+# content that already exists — so a promoted image keeps saying "testing" internally
+# even while served under :latest. The registry tag actually in use is always the
+# authoritative answer; this field is only a same-build-time hint, not a live pointer.
+#
 # Metadata, not branding. Nothing user-visible changes.
 source "${CTX}/build_files/lib/common.sh"
 
@@ -44,13 +51,14 @@ jq -n \
     --arg vendor      "${IMAGE_VENDOR}" \
     --arg ref         "${REF}" \
     --arg version     "${version}" \
+    --arg image_tag   "${IMAGE_TAG:-testing}" \
     --arg fedora      "$(rpm -E %fedora)" \
     --arg base_image  "$(grep -m1 '^OSTREE_VERSION=' /usr/lib/os-release | cut -d= -f2- | tr -d "'\"")" \
     '$base + {
         "image-name":       $name,
         "image-vendor":     $vendor,
         "image-ref":        $ref,
-        "image-tag":        "latest",
+        "image-tag":        $image_tag,
         "image-flavor":     "nvidia",
         "base-image-name":  "kinoite-nvidia",
         "fedora-version":   $fedora,
