@@ -58,9 +58,41 @@ jobs:
           && github.event.workflow_run.event != 'pull_request')
     permissions:
       contents: read
+      actions: read
       packages: write
     steps:
+      - name: Check for an in-flight build
+        id: inflight
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Guards schedule and workflow_dispatch specifically: a workflow_run trigger is
+        # already safe by construction (it only fires once build.yml has fully
+        # completed), but schedule/dispatch have no such guarantee and can land while a
+        # push build is still writing a new :testing digest. Confirmed live: a
+        # workflow_dispatch test here raced an in-progress build.yml push run and
+        # failed to find the manifest, because the digest it read was mid-publish, not
+        # a registry propagation delay. Skipping cleanly here is correct - the next
+        # workflow_run (when that build finishes) or the weekly schedule will re-check.
+        run: |
+          set -euo pipefail
+          COUNT="$(gh run list --repo "${{ github.repository }}" --workflow=build.yml \
+            --status=in_progress --json databaseId --jq 'length')"
+          COUNT_Q="$(gh run list --repo "${{ github.repository }}" --workflow=build.yml \
+            --status=queued --json databaseId --jq 'length')"
+          TOTAL=$(( COUNT + COUNT_Q ))
+          echo "in-flight build.yml runs: ${TOTAL}"
+          if [[ "${TOTAL}" -gt 0 ]]; then
+            echo "skip=true" >>"$GITHUB_OUTPUT"
+            MSG="build.yml has ${TOTAL} run(s) in progress; skipping this check to avoid"
+            MSG="${MSG} reading a mid-publish :${{ env.SOURCE_TAG }}. It will be"
+            MSG="${MSG} re-evaluated on that build's completion or the next schedule."
+            echo "::notice title=Skipping (build in flight)::${MSG}"
+          else
+            echo "skip=false" >>"$GITHUB_OUTPUT"
+          fi
+
       - name: Log in to GHCR (podman/skopeo)
+        if: steps.inflight.outputs.skip != 'true'
         uses: redhat-actions/podman-login@50c2d9a331bb67c8fdab99b86455fad05e2e3252 # v2.0
         with:
           registry: ${{ env.IMAGE_REGISTRY }}
@@ -68,9 +100,11 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install ORAS
+        if: steps.inflight.outputs.skip != 'true'
         uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
 
       - name: Log in to GHCR (oras)
+        if: steps.inflight.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
@@ -94,6 +128,7 @@ jobs:
       # those up in aggregate.
       - name: Compare testing against latest
         id: gate
+        if: steps.inflight.outputs.skip != 'true'
         run: |
           set -euo pipefail
 
@@ -192,6 +227,7 @@ jobs:
           PY
 
       - name: Report gate result
+        if: steps.inflight.outputs.skip != 'true'
         run: |
           echo "::notice title=Content gate::${{ steps.gate.outputs.reason }}"
 
@@ -199,6 +235,7 @@ jobs:
       # "promote now" escape hatch. Every other trigger respects the gate's verdict.
       - name: Decide whether to promote
         id: decide
+        if: steps.inflight.outputs.skip != 'true'
         env:
           FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
           GATE_PROMOTE: ${{ steps.gate.outputs.promote }}
@@ -222,7 +259,7 @@ jobs:
       # and any OCI referrers (the package manifest, the attestation) — nothing here
       # needs to be regenerated.
       - name: Promote testing to latest
-        if: steps.decide.outputs.do_promote == 'true'
+        if: steps.inflight.outputs.skip != 'true' && steps.decide.outputs.do_promote == 'true'
         run: |
           set -euo pipefail
           skopeo copy \
