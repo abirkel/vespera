@@ -8,10 +8,12 @@ on:
     types: [completed]
   # Weekly floor: even if nothing ever triggers the workflow_run path (e.g. a long
   # run of schedule-only builds with no push), latest is still checked once a week.
+  # Tuesday, not Saturday/weekend - a fresh promotion lands mid-week rather than right
+  # before it, so any regression has weekday attention available, not a weekend gap.
   # Off the exact hour for the same reason build.yml's own cron is: GitHub's scheduler
   # is most congested at :00.
   schedule:
-    - cron: '30 8 * * 6'
+    - cron: '30 8 * * 2'
   # Explicit "promote now" escape hatch, matching Bluefin's own documented behaviour
   # ("most images are published weekly, but we may push a new update at any given
   # time"). force=true skips the content gate entirely.
