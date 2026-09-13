@@ -41,11 +41,19 @@ jobs:
   promote:
     name: Promote testing to latest
     runs-on: ubuntu-24.04
-    # Three ways in. workflow_run must have actually succeeded; the other two
-    # (schedule, workflow_dispatch) are unconditional by nature.
+    # Three ways in. workflow_run must have actually succeeded, and specifically from a
+    # push/schedule/workflow_dispatch build, never a pull_request build - PR builds
+    # never publish anything (build.yml gates every push/sign/attach step on
+    # event_name != pull_request), so there is nothing new for the gate to compare.
+    # Without this, three build.yml runs completing close together (a real push plus
+    # two pull_request runs Renovate's own automation re-triggered) fire three
+    # promote.yml runs, and the pull_request ones fail outright since :testing's
+    # manifest was never touched by them. The other two triggers (schedule,
+    # workflow_dispatch) are unconditional by nature.
     if: >-
       github.event_name != 'workflow_run'
-      || github.event.workflow_run.conclusion == 'success'
+      || (github.event.workflow_run.conclusion == 'success'
+          && github.event.workflow_run.event != 'pull_request')
     permissions:
       contents: read
       packages: write
@@ -88,18 +96,35 @@ jobs:
           set -euo pipefail
 
           fetch_manifest_json() {
-            local tag="$1" digest artifact_digest workdir
-            digest="$(skopeo inspect \
-                "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${tag}" 2>/dev/null \
-              | jq -r '.Digest // empty')"
+            local tag="$1" digest artifact_digest workdir attempt
+            # Retry: the registry can briefly lag between a push finishing and its
+            # tag/referrer becoming queryable. Cheap insurance, same shape as
+            # changelog.py's own get_manifest retry loop.
+            for attempt in 1 2 3 4 5; do
+              digest="$(skopeo inspect \
+                  "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${tag}" 2>/dev/null \
+                | jq -r '.Digest // empty')"
+              [[ -n "${digest}" ]] && break
+              MSG="${tag}: digest not found yet (attempt ${attempt}/5), retrying in 10s"
+              echo "::notice::${MSG}" >&2
+              sleep 10
+            done
             [[ -n "${digest}" ]] || { echo ""; return; }
-            artifact_digest="$(
-              oras discover --format json "${IMAGE_REGISTRY}/${IMAGE_NAME}@${digest}" \
-                | jq -r --arg t "${ARTIFACT_TYPE}" \
-                    '.manifests[]? | select(.artifactType == $t) | .digest' \
-                | head -1
-            )"
+
+            for attempt in 1 2 3 4 5; do
+              artifact_digest="$(
+                oras discover --format json "${IMAGE_REGISTRY}/${IMAGE_NAME}@${digest}" \
+                  | jq -r --arg t "${ARTIFACT_TYPE}" \
+                      '.manifests[]? | select(.artifactType == $t) | .digest' \
+                  | head -1
+              )"
+              [[ -n "${artifact_digest}" ]] && break
+              MSG="${tag}: manifest referrer not found yet (attempt ${attempt}/5), retrying in 10s"
+              echo "::notice::${MSG}" >&2
+              sleep 10
+            done
             [[ -n "${artifact_digest}" ]] || { echo ""; return; }
+
             workdir="$(mktemp -d)"
             oras pull "${IMAGE_REGISTRY}/${IMAGE_NAME}@${artifact_digest}" \
               -o "${workdir}" >/dev/null
