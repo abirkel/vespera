@@ -198,10 +198,18 @@ jobs:
             echo "reason=could not read :${SOURCE_TAG} manifest after retrying" >>"$GITHUB_OUTPUT"
             exit 0
           fi
+          # No "first promotion, :latest doesn't exist yet" branch any more: that was
+          # bootstrap-only logic, needed exactly once to get a real :latest built in
+          # the first place (see 44.20260914.4, promoted 2026-09-14). Now that a real
+          # latest-stream build exists and always will going forward, a missing or
+          # unreadable :latest manifest here means something is actually wrong
+          # (registry issue, manifest never attached, tag deleted) rather than an
+          # expected first-run state - so it is treated the same as an unresolved
+          # :testing read: a loud failure, not a silent "promote anyway".
           if [[ -z "${LATEST_JSON}" ]]; then
-            echo "::notice::no :${TARGET_TAG} tag published yet; first promotion always proceeds."
-            echo "promote=true" >>"$GITHUB_OUTPUT"
-            echo "reason=first promotion (no ${TARGET_TAG} tag exists yet)" >>"$GITHUB_OUTPUT"
+            echo "unresolved=true" >>"$GITHUB_OUTPUT"
+            echo "promote=false" >>"$GITHUB_OUTPUT"
+            echo "reason=could not read :${TARGET_TAG} manifest after retrying" >>"$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -258,7 +266,7 @@ jobs:
       - name: Fail loudly if the gate could not resolve
         if: steps.inflight.outputs.skip != 'true' && steps.gate.outputs.unresolved == 'true'
         run: |
-          MSG="Could not read the :${SOURCE_TAG} package manifest after full retry."
+          MSG="${{ steps.gate.outputs.reason }}."
           MSG="${MSG} This run is marked failed so a persistent registry problem is"
           MSG="${MSG} visible instead of silently looking like 'nothing to promote'."
           MSG="${MSG} A later workflow_run or the weekly schedule will retry"
@@ -324,6 +332,7 @@ jobs:
         if: steps.dispatch.outcome == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AFTER: ${{ steps.dispatch.outputs.before }}
         run: |
           set -euo pipefail
           sleep 15
@@ -331,9 +340,8 @@ jobs:
             RUN_ID="$(gh run list --repo "${{ github.repository }}" --workflow=build.yml \
               --event=workflow_dispatch --limit 5 \
               --json databaseId,createdAt,status \
-              --jq --arg after "${{ steps.dispatch.outputs.before }}" \
-                '[.[] | select((.createdAt | fromdateiso8601) >= ($after | tonumber))]
-                 | sort_by(.createdAt) | .[0].databaseId // empty')"
+              --jq "[.[] | select((.createdAt | fromdateiso8601) >= ${AFTER})]
+                    | sort_by(.createdAt) | .[0].databaseId // empty")"
             [[ -n "${RUN_ID}" ]] && break
             echo "dispatched run not visible yet (attempt ${attempt}/10), retrying in 10s"
             sleep 10
