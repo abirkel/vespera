@@ -175,13 +175,9 @@ jobs:
           LATEST_JSON="$(fetch_manifest_json "${TARGET_TAG}")"
 
           if [[ -z "${TESTING_JSON}" ]]; then
-            MSG="could not find a package manifest on :${SOURCE_TAG} after retrying."
-            MSG="${MSG} Treating as a registry propagation delay rather than a real"
-            MSG="${MSG} absence (the tag and build both resolved fine) and skipping"
-            MSG="${MSG} cleanly; the next trigger will get a fresh chance."
-            echo "::warning::${MSG}"
+            echo "unresolved=true" >>"$GITHUB_OUTPUT"
             echo "promote=false" >>"$GITHUB_OUTPUT"
-            echo "reason=could not read :${SOURCE_TAG} manifest, skipped" >>"$GITHUB_OUTPUT"
+            echo "reason=could not read :${SOURCE_TAG} manifest after retrying" >>"$GITHUB_OUTPUT"
             exit 0
           fi
           if [[ -z "${LATEST_JSON}" ]]; then
@@ -239,6 +235,24 @@ jobs:
         if: steps.inflight.outputs.skip != 'true'
         run: |
           echo "::notice title=Content gate::${{ steps.gate.outputs.reason }}"
+
+      # Distinct from "checked, nothing to promote": this is "could not check at all".
+      # Both currently land on promote=false, which would otherwise make a registry
+      # outage indistinguishable from a quiet week - every run goes green either way,
+      # and a real, ongoing failure to promote would have no visible signal at all.
+      # This step turns that specific case into an actual failed run (red X), while
+      # still letting the workflow finish normally: the next workflow_run or the
+      # weekly schedule gets a fresh attempt regardless of whether this step fails.
+      - name: Fail loudly if the gate could not resolve
+        if: steps.inflight.outputs.skip != 'true' && steps.gate.outputs.unresolved == 'true'
+        run: |
+          MSG="Could not read the :${SOURCE_TAG} package manifest after full retry."
+          MSG="${MSG} This run is marked failed so a persistent registry problem is"
+          MSG="${MSG} visible instead of silently looking like 'nothing to promote'."
+          MSG="${MSG} A later workflow_run or the weekly schedule will retry"
+          MSG="${MSG} automatically; no action needed unless this keeps happening."
+          echo "::error::${MSG}"
+          exit 1
 
       # force=true (workflow_dispatch only) bypasses the gate entirely — the explicit
       # "promote now" escape hatch. Every other trigger respects the gate's verdict.
