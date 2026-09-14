@@ -62,6 +62,7 @@ jobs:
     outputs:
       changed: ${{ steps.changed.outputs.changed }}
       version: ${{ steps.version.outputs.version }}
+      stream: ${{ env.DEFAULT_TAG }}
     permissions:
       contents: read
       packages: write
@@ -686,4 +687,14 @@ jobs:
           # the image itself, so this makes the git tag agree with that label.
           target_commitish: ${{ github.sha }}
           body_path: ./changelog.md
-          make_latest: true
+          # GitHub's "Latest release" badge is a SEPARATE concept from the :latest
+          # container tag, and conflating them is an easy, real mistake to make when
+          # skimming the releases page: this must only be true for a genuine `latest`
+          # stream build (needs.build.outputs.stream, sourced from build.yml's own
+          # DEFAULT_TAG), never for a testing- build. Confirmed live on
+          # testing-44.20260914.1: with this unconditionally true, that ordinary daily
+          # testing build claimed the "Latest" badge on the releases page ahead of
+          # every real latest-stream release, which is exactly backwards - the badge
+          # should track the desktop-facing stream, not whichever build merely
+          # happened to publish most recently.
+          make_latest: ${{ needs.build.outputs.stream == 'latest' }}
