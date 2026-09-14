@@ -632,5 +632,13 @@ jobs:
         with:
           name: ${{ steps.notes.outputs.title }}
           tag_name: ${{ steps.notes.outputs.tag }}
+          # Pinned to the exact commit that produced this image, not left to default to
+          # whatever main's HEAD happens to be when this job runs. Those can differ: this
+          # job runs after the build job, on the same triggering commit, but another push
+          # (a Renovate automerge, say) can land on main in between. Without this, the
+          # git tag would point at that later commit instead of the one actually built -
+          # exactly the commit org.opencontainers.image.revision already records inside
+          # the image itself, so this makes the git tag agree with that label.
+          target_commitish: ${{ github.sha }}
           body_path: ./changelog.md
           make_latest: true
