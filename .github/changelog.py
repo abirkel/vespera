@@ -131,15 +131,17 @@ def tag_sort_key(tag: str):
 
 
 def get_prev_tag(manifest, curr: str, fedora_major: str):
-    """Newest published dated tag older than curr.
+    """Newest published dated tag older than curr, within the SAME stream.
 
-    Only `testing-<major>.<date>.<n>` tags qualify. `latest`, the bare major, and any
-    promoted (unprefixed) tag move or belong to a different numbering space, so none
-    of them can anchor a diff. PREFIXED with testing- to match the stream naming
-    Compute version in build.yml now uses (see that step's comment): every build
-    publishes to :testing, so every dated tag it creates carries this prefix.
+    `curr` is either bare (`44.20260906.1`, a `latest` build) or `testing-`-prefixed
+    (`testing-44.20260906.1`). Only dated tags sharing curr's own prefix qualify -
+    diffing a `latest` build against a `testing` one (or vice versa) would compare
+    two different, independently-built streams rather than that stream's own history.
+    `latest` itself, the plain major, and anything else outside this pattern belong to
+    a different numbering space or move, so none of them can anchor a diff either.
     """
-    pattern = re.compile(rf"^testing-{re.escape(fedora_major)}\.\d{{8}}\.\d+$")
+    prefix = "testing-" if curr.startswith("testing-") else ""
+    pattern = re.compile(rf"^{re.escape(prefix)}{re.escape(fedora_major)}\.\d{{8}}\.\d+$")
     curr_key = tag_sort_key(curr)
     tags = sorted(
         (t for t in manifest.get("RepoTags", []) if pattern.match(t)
@@ -319,10 +321,11 @@ def main():
     args = ap.parse_args()
 
     curr_tag = args.version
-    # curr_tag is "testing-44.20260914.4" (see build.yml's Compute version step); strip
-    # the stream prefix before splitting on "." for the Fedora major, or this would
-    # extract "testing-44" instead of "44" and break every downstream regex that
-    # expects a bare major number.
+    # curr_tag is either "testing-44.20260914.4" (a :testing build) or bare
+    # "44.20260914.1" (a real :latest build - see build.yml's Compute version step).
+    # Strip the stream prefix, if any, before splitting on "." for the Fedora major,
+    # or a prefixed tag would extract "testing-44" instead of "44" and break every
+    # downstream regex that expects a bare major number.
     fedora_major = curr_tag.split("-", 1)[-1].split(".")[0]
 
     curr_manifest = get_manifest(curr_tag)

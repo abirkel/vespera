@@ -25,16 +25,29 @@ on:
     # the hour doesn't guarantee on-time firing, but avoids the worst-contended slot.
     - cron: '14 7 * * *'
   workflow_dispatch:
+    inputs:
+      stream:
+        description: >-
+          Which stream to build. "testing" (default) is the always-building,
+          testing--prefixed stream every push/schedule/dispatch normally lands on.
+          "latest" is a genuine separate build — same source commit, same
+          Containerfile, but published under the bare, unprefixed :latest tag with a
+          bare org.opencontainers.image.version label. Only promote.yml dispatches
+          "latest"; nothing else should need to.
+        type: choice
+        options: [testing, latest]
+        default: testing
 
 env:
   IMAGE_NAME: vespera
   IMAGE_REGISTRY: ghcr.io/${{ github.repository_owner }}
   IMAGE_DESC: "Fedora Kinoite with NVIDIA, gaming and light development tooling"
-  # `testing` is the always-building stream: every push, schedule and dispatch lands
-  # here. `latest`, the desktop-facing stream, only moves when promote.yml re-points
-  # it at a `testing` digest — weekly by default, sooner on a qualifying content
-  # change, or on demand via workflow_dispatch. See promote.yml.
-  DEFAULT_TAG: testing
+  # `testing` is the always-building stream: every push, schedule and ordinary dispatch
+  # lands here. `latest`, the desktop-facing stream, is a SEPARATE real build — its own
+  # sign+attest cycle, its own bare (unprefixed) version label — kicked off only by
+  # promote.yml dispatching this workflow with `stream: latest` (weekly by default,
+  # sooner on a qualifying content change, or on demand). See promote.yml.
+  DEFAULT_TAG: ${{ github.event.inputs.stream == 'latest' && 'latest' || 'testing' }}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -91,16 +104,15 @@ jobs:
         run: just check
 
       # Version: <stream->-<fedora-major>.<date>.<run attempt>, e.g. testing-44.20260828.1
+      # for the testing stream, or bare 44.20260828.1 for a real `latest` build.
       #
       # PREFIXED with the stream name, matching Bazzite's own convention (their
       # unstable-44.20260914 / testing-44.20260913.6 / bare 44.20260908 for stable).
-      # Every build here publishes to :testing (see DEFAULT_TAG and the "Compute tags"
-      # step below), so every build gets the testing- prefix; nothing currently builds
-      # a separate stream that would need a different prefix. Promotion (promote.yml)
-      # never rebuilds, so a promoted image still carries this same
-      # org.opencontainers.image.version label internally after landing on :latest -
-      # matching Bazzite's own limitation (their rebase examples show a promoted image
-      # still referencing its originating testing-* tag).
+      # DEFAULT_TAG is `latest` only when promote.yml dispatches this workflow with
+      # `stream: latest` — a genuine separate build, not a re-tag, so it gets its own
+      # honest, unprefixed org.opencontainers.image.version label. Every other trigger
+      # (push, schedule, plain workflow_dispatch) publishes to :testing and gets the
+      # testing- prefix.
       #
       # Read the FEDORA MAJOR from the BASE IMAGE's own label rather than grepped from
       # the Containerfile, which no longer holds a version number now that BASE_TAG is
@@ -108,6 +120,8 @@ jobs:
       # against, including the day ublue promotes `latest` to Fedora 45.
       - name: Compute version
         id: version
+        env:
+          DEFAULT_TAG: ${{ env.DEFAULT_TAG }}
         run: |
           set -euo pipefail
           BASE="$(grep -oP '^ARG BASE_IMAGE="\K[^"]+' Containerfile)"
@@ -121,19 +135,26 @@ jobs:
             exit 1
           fi
           # The dated tag is the anchor the changelog diffs against, so it MUST be unique
-          # WITHIN the testing- prefix's own numbering space. github.run_attempt is 1 for
-          # every NEW run and only increments when the same run is retried, so two
-          # publishes on one day (a push plus the 07:00 schedule) both produced .1 and the
-          # second silently overwrote the first, destroying the older image the changelog
-          # needs to compare against. Take the next free index for today from the registry
-          # instead. Bazzite solves the same problem with a "relabel" step that suffixes
-          # .1, .2 on collision, separately per stream prefix - the ${STREAM_PREFIX}
-          # scoping on the query below matches that: it must only ever look at testing-*
-          # tags, never bare (promoted) ones, or a promoted release sharing today's date
-          # would be miscounted as if it were another testing build.
-          STREAM_PREFIX="testing-"
+          # WITHIN its own stream's numbering space. github.run_attempt is 1 for every
+          # NEW run and only increments when the same run is retried, so two publishes
+          # on one day (a push plus the 07:00 schedule) both produced .1 and the second
+          # silently overwrote the first, destroying the older image the changelog
+          # needs to compare against. Take the next free index for today from the
+          # registry instead. Bazzite solves the same problem with a "relabel" step
+          # that suffixes .1, .2 on collision, separately per stream prefix - the
+          # ${STREAM_PREFIX} scoping on the query below matches that: a bare `latest`
+          # build must only ever look at bare tags, and a `testing` build only at
+          # testing-* ones, or the two streams' independent counters would collide.
+          if [[ "${DEFAULT_TAG}" == "latest" ]]; then
+            STREAM_PREFIX=""
+          else
+            STREAM_PREFIX="testing-"
+          fi
           DATE="$(date -u +%Y%m%d)"
           PREFIX="${STREAM_PREFIX}${FEDORA_MAJOR}.${DATE}"
+          # startswith($p) already scopes this to the current stream's own prefix -
+          # "44.2026...\" never matches "testing-44.2026...\" and vice versa - so no
+          # extra stream filter is needed beyond the prefix match itself.
           HIGHEST="$(skopeo list-tags "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}" 2>/dev/null \
                      | jq -r --arg p "${PREFIX}." \
                          '.Tags[]? | select(startswith($p)) | ltrimstr($p)' \
@@ -161,10 +182,11 @@ jobs:
           elif [[ "${REF_NAME}" != "${DEFAULT_BRANCH}" ]]; then
             # A NON-DEFAULT ref publishes under its branch name and nothing else.
             # `testing` must only ever come from the default branch: it's the tag every
-            # build lands on, and a trial build reaching it would be indistinguishable
-            # from a real one. `latest`, the tag installed machines actually track, is
-            # never touched here at all — only promote.yml ever moves it, by re-tagging
-            # an already-published `testing` digest, never by building.
+            # ordinary build lands on, and a trial build reaching it would be
+            # indistinguishable from a real one. `latest`, the tag installed machines
+            # actually track, is likewise only ever built from the default branch -
+            # promote.yml dispatches this workflow with `stream: latest` on main, it
+            # never dispatches from a branch.
             # Sanitised because a Docker tag allows only [A-Za-z0-9._-], max 128 chars,
             # and must not start with . or - (branch names like renovate/foo would
             # otherwise produce an invalid tag).
@@ -174,7 +196,15 @@ jobs:
                     | cut -c1-64)"
             [[ -n "${TAGS}" ]] || { echo "branch name sanitised to nothing" >&2; exit 1; }
           else
-            TAGS="${DEFAULT_TAG} ${VERSION} ${FEDORA_MAJOR}"
+            # The plain Fedora-major tag (e.g. "44") is only meaningful for the
+            # stream installed machines actually track. Publishing it from :testing
+            # builds too would make :44 flip-flop between the two streams' digests
+            # depending on which one last ran - so only a `latest` build gets it.
+            if [[ "${DEFAULT_TAG}" == "latest" ]]; then
+              TAGS="${DEFAULT_TAG} ${VERSION} ${FEDORA_MAJOR}"
+            else
+              TAGS="${DEFAULT_TAG} ${VERSION}"
+            fi
           fi
           echo "tags=${TAGS}" >>"$GITHUB_OUTPUT"
           echo "Tags: ${TAGS}"

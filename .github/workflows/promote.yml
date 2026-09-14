@@ -1,5 +1,10 @@
 ---
 name: Promote to latest
+# Promotion is a REAL BUILD dispatch, not a re-tag. testing already builds every day
+# (see build.yml); this workflow's job is deciding WHEN a genuinely new, separately
+# built and signed `latest` is warranted, then dispatching build.yml with
+# `stream: latest` to produce it. See the "Dispatch a latest build" step for why a
+# rebuild was chosen over skopeo copy or rewriting the version label in place.
 on:
   # After every completed build.yml run. Gated below on conclusion == success, so a
   # failed or skipped build never reaches the content check.
@@ -57,8 +62,8 @@ jobs:
       || (github.event.workflow_run.conclusion == 'success'
           && github.event.workflow_run.event != 'pull_request')
     permissions:
-      contents: write
-      actions: read
+      contents: read
+      actions: write
       packages: write
     steps:
       - name: Check for an in-flight build
@@ -279,57 +284,99 @@ jobs:
             echo "::notice title=Skipping::${MSG}"
           fi
 
-      # Promotion itself is a re-tag, not a rebuild: testing already exists, signed and
-      # attested, so this just points latest at the same digest and re-pushes the
-      # manifest under the new tag. skopeo copy preserves the manifest digest, layers,
-      # and any OCI referrers (the package manifest, the attestation) — nothing here
-      # needs to be regenerated.
-      - name: Promote testing to latest
-        id: promote
+      # Promotion is now a REAL BUILD, not a re-tag. skopeo copy would leave `latest`
+      # carrying the same testing-<major>.<date>.<n> org.opencontainers.image.version
+      # label the source build had — technically fine for bootc/rpm-ostree, but
+      # confusing on a release build (`rpm-ostree status` on a machine tracking
+      # `latest` would show "Version: testing-..." forever). Dispatching build.yml
+      # with `stream: latest` gets `latest` its own genuine build, sign and attest
+      # cycle from the SAME commit, with its own bare (unprefixed) version label -
+      # the tradeoff being real build time and cost instead of an instant re-tag,
+      # which is the explicit choice made here over re-tagging or rewriting the label
+      # in place.
+      - name: Dispatch a latest build
+        id: dispatch
         if: steps.inflight.outputs.skip != 'true' && steps.decide.outputs.do_promote == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          skopeo copy \
-            "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${SOURCE_TAG}" \
-            "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${TARGET_TAG}"
-          NEW_DIGEST="$(skopeo inspect \
-              "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${TARGET_TAG}" \
-            | jq -r '.Digest')"
+          # Record "now" before dispatching so the polling step below can find the
+          # exact run this triggered, rather than accidentally picking up some other
+          # concurrent build.yml run by mistake.
+          BEFORE="$(date -u +%s)"
+          echo "before=${BEFORE}" >>"$GITHUB_OUTPUT"
+          gh workflow run build.yml --repo "${{ github.repository }}" \
+            --ref "${{ github.event.repository.default_branch || 'main' }}" \
+            -f stream=latest
+          echo "::notice title=Dispatched::build.yml -f stream=latest"
+
+      # workflow_dispatch gives no run ID back directly, so find the run it created by
+      # polling the list for a workflow_dispatch build.yml run newer than the moment
+      # this job dispatched it. A short settle delay first: the run does not always
+      # appear in the list instantly.
+      - name: Find the dispatched run
+        id: find_run
+        if: steps.dispatch.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          sleep 15
+          for attempt in $(seq 1 10); do
+            RUN_ID="$(gh run list --repo "${{ github.repository }}" --workflow=build.yml \
+              --event=workflow_dispatch --limit 5 \
+              --json databaseId,createdAt,status \
+              --jq --arg after "${{ steps.dispatch.outputs.before }}" \
+                '[.[] | select((.createdAt | fromdateiso8601) >= ($after | tonumber))]
+                 | sort_by(.createdAt) | .[0].databaseId // empty')"
+            [[ -n "${RUN_ID}" ]] && break
+            echo "dispatched run not visible yet (attempt ${attempt}/10), retrying in 10s"
+            sleep 10
+          done
+          if [[ -z "${RUN_ID}" ]]; then
+            echo "::error::could not find the dispatched build.yml run after retrying."
+            exit 1
+          fi
+          echo "run_id=${RUN_ID}" >>"$GITHUB_OUTPUT"
+          echo "::notice title=Found run::build.yml run ${RUN_ID}"
+
+      # A real build, ~20-30 minutes based on this pipeline's own build.yml history.
+      # gh run watch blocks until it finishes and exits non-zero if it failed, so a
+      # failed latest build fails this job loudly rather than silently leaving latest
+      # stale with no visible signal.
+      - name: Wait for the latest build to finish
+        id: wait
+        if: steps.find_run.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh run watch "${{ steps.find_run.outputs.run_id }}" \
+            --repo "${{ github.repository }}" --exit-status
+          # build.yml's own "version" job output isn't surfaced by `gh run view` in a
+          # convenient form, so read it back off :latest, which the build just
+          # published, instead.
           PROMOTED_VERSION="$(skopeo inspect \
               "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${TARGET_TAG}" \
             | jq -r '.Labels["org.opencontainers.image.version"] // empty')"
-          echo "digest=${NEW_DIGEST}" >>"$GITHUB_OUTPUT"
+          [[ -n "${PROMOTED_VERSION}" ]] || {
+            echo "::error::latest build finished but :${TARGET_TAG} has no version label." >&2
+            exit 1
+          }
           echo "version=${PROMOTED_VERSION}" >>"$GITHUB_OUTPUT"
-          echo "::notice title=Promoted::${TARGET_TAG} now points at ${NEW_DIGEST}"
+          echo "::notice title=Promoted::latest is now ${PROMOTED_VERSION}"
 
-      # No separate release for latest: the promoted digest is byte-identical to the
-      # testing-* build that already has a full changelog (headline packages, package
-      # diff, commits). A second release for the same content would just duplicate it.
-      # Instead, annotate the EXISTING release so it is discoverable as "this is what
-      # is on latest right now" without a second release object or a second
-      # changelog-generation run.
-      #
-      # Bazzite's actual model is different - their stable/testing/unstable are
-      # separately built streams with their own package sets at promotion time, so a
-      # second release genuinely describes different content there. Ours does not:
-      # promotion is a pure re-tag of a digest that already has a release.
-      - name: Annotate the promoted release
-        if: steps.promote.outputs.version != ''
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PROMOTED_VERSION: ${{ steps.promote.outputs.version }}
+      # No separate release for latest: it IS the release. build.yml's own release
+      # job already generates the full changelog (headline packages, package diff,
+      # commits) for this bare, unprefixed version the moment it publishes — nothing
+      # further to create or annotate here. Unlike the abandoned re-tag design, the
+      # latest build genuinely is separate content this time (its own build, at
+      # whatever point in time this workflow happened to run), so it deserves its own
+      # real release rather than an annotation bolted onto testing's.
+      - name: Report the promotion
+        if: steps.wait.outputs.version != ''
         run: |
-          set -euo pipefail
-          NOTE="✅ Promoted to \`${TARGET_TAG}\` on $(date -u +%Y-%m-%d)."
-          CURRENT_BODY="$(gh release view "${PROMOTED_VERSION}" \
-            --repo "${{ github.repository }}" --json body --jq '.body')"
-          # Idempotent: if this exact note is already in the body (e.g. a re-run), do
-          # not append a duplicate line.
-          if printf '%s' "${CURRENT_BODY}" | grep -qF "${NOTE}"; then
-            echo "::notice::release ${PROMOTED_VERSION} already annotated; skipping."
-            exit 0
-          fi
-          printf '%s\n\n%s\n' "${CURRENT_BODY}" "${NOTE}" > /tmp/release-body.md
-          gh release edit "${PROMOTED_VERSION}" --repo "${{ github.repository }}" \
-            --notes-file /tmp/release-body.md
-          echo "::notice title=Annotated::release ${PROMOTED_VERSION} marked as promoted."
+          MSG="latest ${{ steps.wait.outputs.version }} is live, with its own"
+          MSG="${MSG} GitHub Release from build.yml's release job."
+          echo "::notice title=Done::${MSG}"
