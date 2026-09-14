@@ -57,7 +57,7 @@ jobs:
       || (github.event.workflow_run.conclusion == 'success'
           && github.event.workflow_run.event != 'pull_request')
     permissions:
-      contents: read
+      contents: write
       actions: read
       packages: write
     steps:
@@ -285,6 +285,7 @@ jobs:
       # and any OCI referrers (the package manifest, the attestation) — nothing here
       # needs to be regenerated.
       - name: Promote testing to latest
+        id: promote
         if: steps.inflight.outputs.skip != 'true' && steps.decide.outputs.do_promote == 'true'
         run: |
           set -euo pipefail
@@ -294,4 +295,41 @@ jobs:
           NEW_DIGEST="$(skopeo inspect \
               "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${TARGET_TAG}" \
             | jq -r '.Digest')"
+          PROMOTED_VERSION="$(skopeo inspect \
+              "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${TARGET_TAG}" \
+            | jq -r '.Labels["org.opencontainers.image.version"] // empty')"
+          echo "digest=${NEW_DIGEST}" >>"$GITHUB_OUTPUT"
+          echo "version=${PROMOTED_VERSION}" >>"$GITHUB_OUTPUT"
           echo "::notice title=Promoted::${TARGET_TAG} now points at ${NEW_DIGEST}"
+
+      # No separate release for latest: the promoted digest is byte-identical to the
+      # testing-* build that already has a full changelog (headline packages, package
+      # diff, commits). A second release for the same content would just duplicate it.
+      # Instead, annotate the EXISTING release so it is discoverable as "this is what
+      # is on latest right now" without a second release object or a second
+      # changelog-generation run.
+      #
+      # Bazzite's actual model is different - their stable/testing/unstable are
+      # separately built streams with their own package sets at promotion time, so a
+      # second release genuinely describes different content there. Ours does not:
+      # promotion is a pure re-tag of a digest that already has a release.
+      - name: Annotate the promoted release
+        if: steps.promote.outputs.version != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROMOTED_VERSION: ${{ steps.promote.outputs.version }}
+        run: |
+          set -euo pipefail
+          NOTE="✅ Promoted to \`${TARGET_TAG}\` on $(date -u +%Y-%m-%d)."
+          CURRENT_BODY="$(gh release view "${PROMOTED_VERSION}" \
+            --repo "${{ github.repository }}" --json body --jq '.body')"
+          # Idempotent: if this exact note is already in the body (e.g. a re-run), do
+          # not append a duplicate line.
+          if printf '%s' "${CURRENT_BODY}" | grep -qF "${NOTE}"; then
+            echo "::notice::release ${PROMOTED_VERSION} already annotated; skipping."
+            exit 0
+          fi
+          printf '%s\n\n%s\n' "${CURRENT_BODY}" "${NOTE}" > /tmp/release-body.md
+          gh release edit "${PROMOTED_VERSION}" --repo "${{ github.repository }}" \
+            --notes-file /tmp/release-body.md
+          echo "::notice title=Annotated::release ${PROMOTED_VERSION} marked as promoted."

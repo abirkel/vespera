@@ -90,10 +90,20 @@ jobs:
       - name: Check just syntax
         run: just check
 
-      # Version: <fedora-major>.<date>.<run attempt>, e.g. 44.20260828.1
+      # Version: <stream->-<fedora-major>.<date>.<run attempt>, e.g. testing-44.20260828.1
       #
-      # Read from the BASE IMAGE's own label rather than grepped from the
-      # Containerfile, which no longer holds a version number now that BASE_TAG is
+      # PREFIXED with the stream name, matching Bazzite's own convention (their
+      # unstable-44.20260914 / testing-44.20260913.6 / bare 44.20260908 for stable).
+      # Every build here publishes to :testing (see DEFAULT_TAG and the "Compute tags"
+      # step below), so every build gets the testing- prefix; nothing currently builds
+      # a separate stream that would need a different prefix. Promotion (promote.yml)
+      # never rebuilds, so a promoted image still carries this same
+      # org.opencontainers.image.version label internally after landing on :latest -
+      # matching Bazzite's own limitation (their rebase examples show a promoted image
+      # still referencing its originating testing-* tag).
+      #
+      # Read the FEDORA MAJOR from the BASE IMAGE's own label rather than grepped from
+      # the Containerfile, which no longer holds a version number now that BASE_TAG is
       # `latest`. The published tag is then always the release actually built
       # against, including the day ublue promotes `latest` to Fedora 45.
       - name: Compute version
@@ -110,15 +120,20 @@ jobs:
             echo "could not determine Fedora major from base label '${BASE_VERSION}'" >&2
             exit 1
           fi
-          # The dated tag is the anchor the changelog diffs against, so it MUST be unique.
-          # github.run_attempt is 1 for every NEW run and only increments when the same run
-          # is retried, so two publishes on one day (a push plus the 07:00 schedule) both
-          # produced .1 and the second silently overwrote the first, destroying the older
-          # image the changelog needs to compare against. Take the next free index for
-          # today from the registry instead. Bazzite solves the same problem with a
-          # "relabel" step that suffixes .1, .2 on collision.
+          # The dated tag is the anchor the changelog diffs against, so it MUST be unique
+          # WITHIN the testing- prefix's own numbering space. github.run_attempt is 1 for
+          # every NEW run and only increments when the same run is retried, so two
+          # publishes on one day (a push plus the 07:00 schedule) both produced .1 and the
+          # second silently overwrote the first, destroying the older image the changelog
+          # needs to compare against. Take the next free index for today from the registry
+          # instead. Bazzite solves the same problem with a "relabel" step that suffixes
+          # .1, .2 on collision, separately per stream prefix - the ${STREAM_PREFIX}
+          # scoping on the query below matches that: it must only ever look at testing-*
+          # tags, never bare (promoted) ones, or a promoted release sharing today's date
+          # would be miscounted as if it were another testing build.
+          STREAM_PREFIX="testing-"
           DATE="$(date -u +%Y%m%d)"
-          PREFIX="${FEDORA_MAJOR}.${DATE}"
+          PREFIX="${STREAM_PREFIX}${FEDORA_MAJOR}.${DATE}"
           HIGHEST="$(skopeo list-tags "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}" 2>/dev/null \
                      | jq -r --arg p "${PREFIX}." \
                          '.Tags[]? | select(startswith($p)) | ltrimstr($p)' \
