@@ -296,8 +296,60 @@ check-ntsync:
     echo "${dim}older custom builds may need WINE_DISABLE_FAST_SYNC=0.${normal}"
 
 
-# No `alias changelog := changelogs`: the base image already defines `changelog`
-# for its own release notes, and re-aliasing it breaks `just --list`.
+# Fix Bluetooth game controllers (Xbox, 8BitDo, Switch Pro clones) that pair but never
+# send input, or disconnect within seconds
+fix-bt-controller:
+    #!/usr/bin/bash
+    source /usr/lib/ujust/ujust.sh
+    set -euo pipefail
+
+    echo "${bold}What this fixes${normal}"
+    echo "Some Bluetooth game controller firmware (many Xbox and 8BitDo pads over"
+    echo "direct Bluetooth, not their 2.4GHz USB dongles) cannot negotiate the"
+    echo "kernel's Enhanced Re-Transmission Mode (ERTM). Symptoms: the controller"
+    echo "pairs and shows Connected, but no input device ever appears, or it drops"
+    echo "the connection within a few seconds of reconnecting."
+    echo
+    echo "${bold}What it does${normal}"
+    echo "Adds ${b}bluetooth.disable_ertm=1${n} as a kernel argument. This is global -"
+    echo "it turns off ERTM for ${b}every${n} Bluetooth device on this machine, not just"
+    echo "the affected controller. Other devices (headsets, mice, keyboards) are"
+    echo "generally unaffected, since ERTM mainly matters for the kind of"
+    echo "multi-profile, low-latency link a game controller needs."
+    echo
+    echo "${dim}Not applied by default. Only real symptom this fixes is a controller"
+    echo "that will not send input or will not stay connected over Bluetooth.${normal}"
+    echo
+    CURRENT=$(rpm-ostree kargs 2>/dev/null | grep -c 'bluetooth\.disable_ertm=1' || true)
+    if [ "${CURRENT}" -gt 0 ]; then
+      echo "${green}Already applied.${normal} Reboot if you have not since setting it,"
+      echo "then re-pair the controller (stale pairing data can still show the old"
+      echo "failure until it is re-paired under the new setting)."
+      exit 0
+    fi
+    CHOICE=$(Confirm "Add bluetooth.disable_ertm=1 and prompt for a reboot?")
+    if [ "$CHOICE" -ne 0 ]; then
+      echo "No changes made."
+      exit 0
+    fi
+    sudo rpm-ostree kargs --append-if-missing=bluetooth.disable_ertm=1
+    echo
+    echo "${bold}Next steps${normal}"
+    echo "  1. Reboot to apply the new kernel argument."
+    echo "  2. Forget/remove the controller in Bluetooth settings if it was paired"
+    echo "     before this fix, then pair it again - stale pairing data caches the"
+    echo "     old, failing negotiation."
+    echo
+    echo "To undo later: ${green}ujust unfix-bt-controller${normal}"
+
+# Undo fix-bt-controller: remove the disable_ertm kernel argument
+unfix-bt-controller:
+    #!/usr/bin/bash
+    source /usr/lib/ujust/ujust.sh
+    set -euo pipefail
+    sudo rpm-ostree kargs --delete-if-present=bluetooth.disable_ertm=1
+    echo "${green}Removed.${normal} Reboot to restore normal ERTM behaviour."
+
 
 # Show the package changelog for the latest published image
 changelogs:
