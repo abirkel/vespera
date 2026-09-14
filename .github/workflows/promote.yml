@@ -125,12 +125,22 @@ jobs:
       # "Attach package manifest" step writes on every publish, so this needs no new
       # data, no image pull, and no rebuild.
       #
+      # HEADLINE PACKAGES ONLY, deliberately excluding the base image label. Kinoite's
+      # base image is rebuilt by ublue nearly every day, and build.yml's own no-op
+      # gate already showed that a same-content rebuild still moves the base's
+      # ostree.commit/version daily even when nothing it ships actually changed. If
+      # that label move alone triggered an early promotion, this gate would promote
+      # almost every day - exactly the client-side update churn the weekly-by-default
+      # promotion cadence exists to avoid. A pure base rebuild (or base rebuild plus
+      # only leaf-package movement) is left for the weekly schedule to pick up; only a
+      # change to a HEADLINE package - the ones with real day-to-day desktop impact -
+      # is worth promoting early for.
+      #
       # HEADLINE set matches .github/changelog.py's HEADLINE_PKGS exactly (kernel, KDE,
-      # Mesa, Nvidia, Podman, Bootc, Flatpak, OSTree, RPM-OSTree) plus the base image
-      # name/version recorded in the manifest's "source" object. Anything outside that
-      # set (a leaf library bump, a config-only digest bump) does not trigger a
-      # promotion on its own; the weekly schedule trigger is what eventually picks
-      # those up in aggregate.
+      # Mesa, Nvidia, Podman, Bootc, Flatpak, OSTree, RPM-OSTree). Anything outside that
+      # set (a leaf library bump, or the base image moving with no headline-package
+      # change) does not trigger a promotion on its own; the weekly schedule trigger is
+      # what eventually picks those up in aggregate.
       - name: Compare testing against latest
         id: gate
         if: steps.inflight.outputs.skip != 'true'
@@ -222,21 +232,15 @@ jobs:
               if tv.get(n) != lv.get(n)
           )
 
-          t_base = testing.get("source", {}).get("base_version")
-          l_base = latest.get("source", {}).get("base_version")
-          base_changed = t_base != l_base
-
-          if changed_headline or base_changed:
-              reasons = []
-              if base_changed:
-                  reasons.append(f"base image {l_base} -> {t_base}")
-              if changed_headline:
-                  reasons.append("headline packages changed: " + ", ".join(changed_headline))
+          # Base image identity is intentionally NOT checked here - see the step
+          # comment above. It moves almost daily on its own and would otherwise
+          # promote almost every day, defeating the point of a weekly-by-default cadence.
+          if changed_headline:
               print("promote=true")
-              print(f"reason={'; '.join(reasons)}")
+              print("reason=headline packages changed: " + ", ".join(changed_headline))
           else:
               print("promote=false")
-              print("reason=no base image or headline package change since last promotion")
+              print("reason=no headline package change since last promotion")
           PY
 
       - name: Report gate result
