@@ -18,6 +18,26 @@ for f in /etc/yum.repos.d/_copr*.repo; do
     sed -i 's/^enabled=1/enabled=0/' "$f"
 done
 
+# Terra's .repo files and GPG keys are removed outright, not just disabled. Leaving
+# them present-but-disabled is what disabled means at runtime (dnf5 skips them,
+# confirmed via `dnf5 repolist --enabled` showing no terra* entries), but
+# bootc-image-builder's ISO manifest-generation step reads every .repo file under
+# /etc/yum.repos.d/ regardless of enabled=, including terra.repo's
+# gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-terra$releasever line, and fails the
+# whole depsolve if it cannot resolve one - confirmed live:
+#   RepoError: ... Failed to retrieve GPG key for repo 'terra': Curl error (37):
+#   Could not read a file:// file for file:///etc/pki/rpm-gpg/RPM-GPG-KEY-terra44
+# even though that exact file exists and is readable inside the shipped image
+# (verified: `file`, `stat`, non-empty PGP block). The mismatch is in bootc-image-
+# builder's own manifest-resolution sandbox, not in this image - so the fix here is
+# to not leave anything for it to try to resolve in the first place. Nothing at
+# runtime needs Terra present: its packages are already installed by this point in
+# the build, and 20-packages-thirdparty.sh's own final `setopt enabled=0` was only
+# ever a courtesy for later manual debugging, not a real requirement.
+log "Removing Terra repo files and GPG keys (packages already installed; not needed at runtime)"
+rm -f /etc/yum.repos.d/terra*.repo
+rm -f /etc/pki/rpm-gpg/RPM-GPG-KEY-terra*
+
 log "Repository state in the shipped image"
 dnf5 repolist --enabled 2>/dev/null | sed 's/^/    /' || true
 # The ublue akmods COPR is enabled by the base at priority 85, which is expected.
