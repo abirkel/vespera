@@ -134,34 +134,37 @@ jobs:
 
           fetch_manifest_json() {
             local tag="$1" digest artifact_digest workdir attempt
-            # Retry: the registry can lag noticeably between a push finishing and its
-            # tag/referrer becoming queryable. Confirmed live, twice: a manifest that
-            # was already >30s old by the time this workflow started still was not
-            # resolvable via oras discover for well over a minute after that. 10
-            # attempts at 15s (150s total, plus the digest lookup's own budget) gives
-            # real headroom instead of guessing at a slightly bigger fixed number.
-            for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            # Modest retry only, as defense against a genuine transient blip. NOT sized
+            # for a real propagation delay: three straight failures here turned out to
+            # be a jq filter bug (oras 1.3.x's `discover --format json` nests referrers
+            # under `.referrers`, not the older `.manifests` this originally assumed),
+            # not the registry, so retrying longer was never going to help. Fixed to
+            # accept either key. Kept short (4x10s=40s) on purpose now that the actual
+            # cause is fixed - a long retry here was hiding a real bug behind a
+            # plausible-sounding "eventual consistency" story for three runs in a row.
+            for attempt in 1 2 3 4; do
               digest="$(skopeo inspect \
                   "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${tag}" 2>/dev/null \
                 | jq -r '.Digest // empty')"
               [[ -n "${digest}" ]] && break
-              MSG="${tag}: digest not found yet (attempt ${attempt}/10), retrying in 15s"
+              MSG="${tag}: digest not found yet (attempt ${attempt}/4), retrying in 10s"
               echo "::notice::${MSG}" >&2
-              sleep 15
+              sleep 10
             done
             [[ -n "${digest}" ]] || { echo ""; return; }
 
-            for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            for attempt in 1 2 3 4; do
               artifact_digest="$(
                 oras discover --format json "${IMAGE_REGISTRY}/${IMAGE_NAME}@${digest}" \
                   | jq -r --arg t "${ARTIFACT_TYPE}" \
-                      '.manifests[]? | select(.artifactType == $t) | .digest' \
-                  | head -1
+                      '(.referrers // .manifests // [])[]?
+                       | select(.artifactType == $t) | .digest'
               )"
+              artifact_digest="$(printf '%s\n' "${artifact_digest}" | head -1)"
               [[ -n "${artifact_digest}" ]] && break
-              MSG="${tag}: manifest referrer not found yet (attempt ${attempt}/10), retrying in 15s"
+              MSG="${tag}: manifest referrer not found yet (attempt ${attempt}/4), retrying in 10s"
               echo "::notice::${MSG}" >&2
-              sleep 15
+              sleep 10
             done
             [[ -n "${artifact_digest}" ]] || { echo ""; return; }
 
