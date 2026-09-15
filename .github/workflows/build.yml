@@ -164,9 +164,11 @@ jobs:
           # vice versa - so no extra stream filter is needed beyond the prefix match
           # itself. The bare-tag check uses an exact match ($p == PREFIX, no trailing
           # dot) for the same reason.
-          TAGS_JSON="$(skopeo list-tags "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}" 2>/dev/null || echo '{"Tags":[]}')"
+          TAGS_JSON="$(skopeo list-tags "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}" \
+                       2>/dev/null || echo '{"Tags":[]}')"
           BARE_EXISTS="$(jq -r --arg p "${PREFIX}" '.Tags[]? | select(. == $p)' <<<"${TAGS_JSON}")"
-          HIGHEST="$(jq -r --arg p "${PREFIX}." '.Tags[]? | select(startswith($p)) | ltrimstr($p)' <<<"${TAGS_JSON}" \
+          HIGHEST="$(jq -r --arg p "${PREFIX}." \
+                       '.Tags[]? | select(startswith($p)) | ltrimstr($p)' <<<"${TAGS_JSON}" \
                      | grep -xE '[0-9]+' | sort -n | tail -1 || true)"
           if [[ -z "${BARE_EXISTS}" && -z "${HIGHEST}" ]]; then
             # Nothing published today yet under this stream — bare prefix, no suffix.
