@@ -133,15 +133,24 @@ def tag_sort_key(tag: str):
 def get_prev_tag(manifest, curr: str, fedora_major: str):
     """Newest published dated tag older than curr, within the SAME stream.
 
-    `curr` is either bare (`44.20260906.1`, a `latest` build) or `testing-`-prefixed
-    (`testing-44.20260906.1`). Only dated tags sharing curr's own prefix qualify -
-    diffing a `latest` build against a `testing` one (or vice versa) would compare
-    two different, independently-built streams rather than that stream's own history.
-    `latest` itself, the plain major, and anything else outside this pattern belong to
-    a different numbering space or move, so none of them can anchor a diff either.
+    `curr` is either bare (`44.20260906` or `44.20260906.1`, a `latest` build) or
+    `testing-`-prefixed (`testing-44.20260906` / `testing-44.20260906.1`). The point
+    release is present from a stream's SECOND build of a day onward only — the first
+    build of a day publishes the bare `<major>.<date>` tag with no trailing `.N` — so
+    the suffix must be optional here, not mandatory: a build.yml change (see its
+    Compute version step) that made the first build of a day bare would otherwise
+    make every such day invisible to this pattern, silently dropping it as a diff
+    anchor exactly like the collision bug this function's tag_sort_key ordering was
+    built to avoid.
+
+    Only dated tags sharing curr's own prefix qualify - diffing a `latest` build
+    against a `testing` one (or vice versa) would compare two different,
+    independently-built streams rather than that stream's own history. `latest`
+    itself, the plain major, and anything else outside this pattern belong to a
+    different numbering space or move, so none of them can anchor a diff either.
     """
     prefix = "testing-" if curr.startswith("testing-") else ""
-    pattern = re.compile(rf"^{re.escape(prefix)}{re.escape(fedora_major)}\.\d{{8}}\.\d+$")
+    pattern = re.compile(rf"^{re.escape(prefix)}{re.escape(fedora_major)}\.\d{{8}}(\.\d+)?$")
     curr_key = tag_sort_key(curr)
     tags = sorted(
         (t for t in manifest.get("RepoTags", []) if pattern.match(t)
@@ -314,7 +323,7 @@ def build_headline(prev, curr):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("version", help="version tag just published, e.g. 44.20260903.1")
+    ap.add_argument("version", help="version tag just published, e.g. 44.20260903 or 44.20260903.1")
     ap.add_argument("output", help="file to write TITLE/TAG to")
     ap.add_argument("changelog", help="file to write the release body to")
     ap.add_argument("--workdir", default=".", help="git checkout for the commit table")
@@ -323,9 +332,11 @@ def main():
     curr_tag = args.version
     # curr_tag is either "testing-44.20260914.4" (a :testing build) or bare
     # "44.20260914.1" (a real :latest build - see build.yml's Compute version step).
-    # Strip the stream prefix, if any, before splitting on "." for the Fedora major,
-    # or a prefixed tag would extract "testing-44" instead of "44" and break every
-    # downstream regex that expects a bare major number.
+    # The trailing ".N" is only present from a stream's SECOND build of a given day
+    # onward; its first build publishes just "...44.20260914" / "testing-...44.20260914"
+    # with no point release at all. Strip the stream prefix, if any, before splitting
+    # on "." for the Fedora major, or a prefixed tag would extract "testing-44" instead
+    # of "44" and break every downstream regex that expects a bare major number.
     fedora_major = curr_tag.split("-", 1)[-1].split(".")[0]
 
     curr_manifest = get_manifest(curr_tag)

@@ -97,8 +97,12 @@ jobs:
       - name: Check just syntax
         run: just check
 
-      # Version: <stream->-<fedora-major>.<date>.<run attempt>, e.g. testing-44.20260828.1
-      # for the testing stream, or bare 44.20260828.1 for a real `latest` build.
+      # Version: <stream->-<fedora-major>.<date>[.<point>], e.g. testing-44.20260828 for
+      # the testing stream's first build of the day, testing-44.20260828.1 for its
+      # second, or bare 44.20260828 / 44.20260828.1 for a real `latest` build. The point
+      # release is omitted entirely on the first build of a given day for a stream, and
+      # only appears from the second build onward (.1, .2, ...) — see the Compute
+      # version step below.
       #
       # PREFIXED with the stream name, matching Bazzite's own convention (their
       # unstable-44.20260914 / testing-44.20260913.6 / bare 44.20260908 for stable).
@@ -131,14 +135,15 @@ jobs:
           # The dated tag is the anchor the changelog diffs against, so it MUST be unique
           # WITHIN its own stream's numbering space. github.run_attempt is 1 for every
           # NEW run and only increments when the same run is retried, so two publishes
-          # on one day (a push plus the 07:00 schedule) both produced .1 and the second
-          # silently overwrote the first, destroying the older image the changelog
-          # needs to compare against. Take the next free index for today from the
-          # registry instead. Bazzite solves the same problem with a "relabel" step
-          # that suffixes .1, .2 on collision, separately per stream prefix - the
-          # ${STREAM_PREFIX} scoping on the query below matches that: a bare `latest`
-          # build must only ever look at bare tags, and a `testing` build only at
-          # testing-* ones, or the two streams' independent counters would collide.
+          # on one day (a push plus the 07:00 schedule) would otherwise collide on the
+          # same tag and the second silently overwrite the first, destroying the older
+          # image the changelog needs to compare against. Take the next free index for
+          # today from the registry instead. Bazzite solves the same problem with a
+          # "relabel" step that suffixes .1, .2 on collision, separately per stream
+          # prefix - the ${STREAM_PREFIX} scoping on the query below matches that: a
+          # bare `latest` build must only ever look at bare tags, and a `testing` build
+          # only at testing-* ones, or the two streams' independent counters would
+          # collide.
           if [[ "${DEFAULT_TAG}" == "latest" ]]; then
             STREAM_PREFIX=""
           else
@@ -146,14 +151,31 @@ jobs:
           fi
           DATE="$(date -u +%Y%m%d)"
           PREFIX="${STREAM_PREFIX}${FEDORA_MAJOR}.${DATE}"
-          # startswith($p) already scopes this to the current stream's own prefix -
-          # "44.2026...\" never matches "testing-44.2026...\" and vice versa - so no
-          # extra stream filter is needed beyond the prefix match itself.
-          HIGHEST="$(skopeo list-tags "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}" 2>/dev/null \
-                     | jq -r --arg p "${PREFIX}." \
-                         '.Tags[]? | select(startswith($p)) | ltrimstr($p)' \
+          # The FIRST build of a day publishes the bare PREFIX with no point-release
+          # suffix (e.g. 44.20260915); the second gets .1, the third .2, and so on. So
+          # "highest point release so far" is not enough on its own — a day with only
+          # the bare tag published has no PREFIX.N tag at all, which must still be read
+          # as "one build already happened today", not "none have". Check for the bare
+          # tag explicitly, or a retried run would re-publish the bare PREFIX a second
+          # time and overwrite today's first image instead of taking .1.
+          #
+          # startswith($p) already scopes the point-release query to the current
+          # stream's own prefix - "44.2026...\" never matches "testing-44.2026...\" and
+          # vice versa - so no extra stream filter is needed beyond the prefix match
+          # itself. The bare-tag check uses an exact match ($p == PREFIX, no trailing
+          # dot) for the same reason.
+          TAGS_JSON="$(skopeo list-tags "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}" \
+                       2>/dev/null || echo '{"Tags":[]}')"
+          BARE_EXISTS="$(jq -r --arg p "${PREFIX}" '.Tags[]? | select(. == $p)' <<<"${TAGS_JSON}")"
+          HIGHEST="$(jq -r --arg p "${PREFIX}." \
+                       '.Tags[]? | select(startswith($p)) | ltrimstr($p)' <<<"${TAGS_JSON}" \
                      | grep -xE '[0-9]+' | sort -n | tail -1 || true)"
-          VERSION="${PREFIX}.$(( ${HIGHEST:-0} + 1 ))"
+          if [[ -z "${BARE_EXISTS}" && -z "${HIGHEST}" ]]; then
+            # Nothing published today yet under this stream — bare prefix, no suffix.
+            VERSION="${PREFIX}"
+          else
+            VERSION="${PREFIX}.$(( ${HIGHEST:-0} + 1 ))"
+          fi
           echo "fedora_major=${FEDORA_MAJOR}" >>"$GITHUB_OUTPUT"
           echo "version=${VERSION}" >>"$GITHUB_OUTPUT"
           echo "Base ${REF} is Fedora ${FEDORA_MAJOR}; building version ${VERSION}"
