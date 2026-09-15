@@ -77,6 +77,17 @@ systemctl enable ratbagd.service
 # Fan/pump curve daemon; the coolercontrol GUI is useless without it.
 systemctl enable coolercontrold.service
 
+# nvidia-settings ships /etc/xdg/autostart/nvidia-settings-load.desktop, which the
+# xdg-autostart generator turns into a per-user unit that runs
+# `nvidia-settings --load-config-only` at login. That is an X11 tool: on this Wayland
+# Kinoite desktop it has no X server to talk to and exits 1, so the unit fails on every
+# login and pushes `systemctl is-system-running` to `degraded` — purely cosmetic (the
+# nvidia-open driver itself loads fine). Masking the generated user unit for all users
+# keeps it inert. --global writes /etc/systemd/user/, so it ships in the image and is
+# carried forward by rpm-ostree's /etc merge on every update.
+systemctl --global mask 'app-nvidia\x2dsettings\x2dload@autostart.service'
+info "masked X11-era nvidia-settings-load autostart (fails on Wayland, cosmetic)"
+
 # ---------------------------------------------------------------------------
 # Foreground boost (Bazzite's gamemode alternative). dmemcg-booster boosts the cgroup
 # of whatever the compositor reports as focused, so it needs no per-game cooperation.
