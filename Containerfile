@@ -42,7 +42,7 @@ ARG BASE_TAG="latest@sha256:333b7172fecd678f732f04e37db8362968dc056efbb9f3e69b26
 # version of these RPMs against the base's and warns loudly, naming this line. It does
 # NOT fail the build — a stale akmods costs only the virtual-camera module.
 ARG AKMODS_IMAGE="ghcr.io/ublue-os/akmods"
-ARG AKMODS_TAG="main-44@sha256:58b4403b4289f52bc2876c5176456a9512c07b943d625aee9c22759a23494bb9"
+ARG AKMODS_TAG="main-44@sha256:f2397e68e1dc926be5c1b5168b6917e5d76833ed863c0d9dd06f94cef86bed5c"
 FROM ${AKMODS_IMAGE}:${AKMODS_TAG} AS akmods
 
 FROM scratch AS ctx
