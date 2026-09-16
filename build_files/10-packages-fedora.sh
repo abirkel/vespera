@@ -96,6 +96,25 @@ KDE=(
 )
 
 # ---------------------------------------------------------------------------
+# Input method: fcitx5 with Japanese (Mozc) support.
+#
+# fcitx5 core doesn't autostart itself or set GTK_IM_MODULE/QT_IM_MODULE/XMODIFIERS
+# -- that's the separate fcitx5-autostart subpackage. fcitx5-gtk/-qt are the
+# toolkit IM-module shims, fcitx5-configtool/kcm-fcitx5 are the GUI, fcitx5-mozc is
+# the Japanese engine. Env vars are also set redundantly in
+# system_files/usr/lib/environment.d/20-vespera-fcitx5.conf.
+# ---------------------------------------------------------------------------
+IME=(
+    fcitx5
+    fcitx5-gtk
+    fcitx5-qt
+    fcitx5-configtool
+    kcm-fcitx5
+    fcitx5-mozc
+    fcitx5-autostart
+)
+
+# ---------------------------------------------------------------------------
 # iPhone over USB. libimobiledevice, its utils and usbmuxd (plus udev rules and unit)
 # are already in the base; ifuse and ideviceinstaller are the missing halves.
 # ---------------------------------------------------------------------------
@@ -185,6 +204,7 @@ dnf5 -y install \
     "${GAMING[@]}" \
     "${VIRT[@]}" \
     "${KDE[@]}" \
+    "${IME[@]}" \
     "${IDEVICE[@]}" \
     "${NETFS[@]}" \
     "${AUDIO[@]}" \
