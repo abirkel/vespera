@@ -5,18 +5,18 @@ on:
     branches: [main]
     paths: ['Containerfile']
 
-# Fast, cheap pre-check for PRs that touch Containerfile, in practice almost always a
-# Renovate digest bump on BASE_TAG or AKMODS_TAG. Skips the ~20+ minute full image build
-# just to answer one question: does the akmods image pinned here ship kmods for the same
-# kernel the base image pinned here runs?
+# Fast, cheap pre-check for PRs that touch Containerfile — in practice almost always a
+# Renovate digest bump on BASE_TAG, now that AKMODS_TAG is a floating tag Renovate no
+# longer tracks (see .github/renovate.json5). Skips the ~20+ minute full image build
+# just to answer one question: does akmods currently have a build available for the
+# same kernel this PR's proposed base image runs?
 #
-# WHY THIS EXISTS: AKMODS_TAG and BASE_TAG are bumped independently by separate Renovate
-# rules (see .github/renovate.json5). Both can point at Fedora 44 and still disagree on
-# the exact kernel build, since akmods and kinoite-nvidia are rebuilt on independent
-# schedules upstream. build_files/30-kmods.sh already fails the full build on this exact
-# mismatch, so this job does not change what merges, it only surfaces the same failure
-# in seconds instead of after a full build, and names the mismatch directly instead of
-# requiring a dig through build logs.
+# WHY THIS EXISTS: build.yml's "Resolve matching akmods digest" step performs the real,
+# authoritative check at build time — this job exists only to give a PR fast feedback
+# before it merges, instead of waiting for the full build to fail on the same mismatch.
+# It does not change what merges: build.yml still fails closed on a real mismatch
+# regardless of what this job reports, since akmods can (and does) publish a new,
+# matching build in the time between this check and the next real build.
 #
 # HOW: both ghcr.io/ublue-os/kinoite-nvidia and ghcr.io/ublue-os/akmods stamp an
 # `ostree.linux` config label with the exact kernel-core version they ship or were built
@@ -39,7 +39,7 @@ jobs:
       - name: Install skopeo
         run: sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
 
-      - name: Read pinned refs from Containerfile
+      - name: Read refs from Containerfile
         id: tags
         run: |
           base_tag="$(grep -oP '^ARG BASE_TAG="\K[^"]+' Containerfile)"
@@ -47,14 +47,16 @@ jobs:
           base_image="$(grep -oP '^ARG BASE_IMAGE="\K[^"]+' Containerfile)"
           akmods_image="$(grep -oP '^ARG AKMODS_IMAGE="\K[^"]+' Containerfile)"
 
-          # Both ARGs are pinned as tag@sha256:digest. skopeo will not take a ref with
+          # BASE_TAG is pinned as tag@sha256:digest. skopeo will not take a ref with
           # both a tag and a digest, so use the digest alone, it is the authoritative
           # part of the pin anyway.
           base_digest="${base_tag##*@}"
-          akmods_digest="${akmods_tag##*@}"
 
+          # AKMODS_TAG is a bare floating tag (e.g. main-44) with no digest to strip —
+          # this job checks against whatever akmods currently resolves to right now,
+          # which is exactly what build.yml will also resolve against at build time.
           echo "base_ref=${base_image}@${base_digest}" >> "${GITHUB_OUTPUT}"
-          echo "akmods_ref=${akmods_image}@${akmods_digest}" >> "${GITHUB_OUTPUT}"
+          echo "akmods_ref=${akmods_image}:${akmods_tag}" >> "${GITHUB_OUTPUT}"
 
       - name: Compare kernel versions
         env:
@@ -63,8 +65,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Base image ref  : ${BASE_REF}"
-          echo "Akmods image ref: ${AKMODS_REF}"
+          echo "Base image ref (proposed by this PR): ${BASE_REF}"
+          echo "Akmods floating ref (current)        : ${AKMODS_REF}"
 
           # Both images stamp the kernel they run/were built against in the
           # ostree.linux config label. Reading it needs only the config blob, not
@@ -88,13 +90,15 @@ jobs:
           fi
 
           if [[ "${base_kver}" != "${akmods_kver}" ]]; then
-            echo "::error::Kernel mismatch. Base image (${BASE_REF}) ships kernel" \
-              "${base_kver}, but akmods (${AKMODS_REF}) is built for kernel" \
-              "${akmods_kver}. The full build will fail on this" \
-              "(build_files/30-kmods.sh requires an exact match for v4l2loopback)." \
-              "Either wait for the base image to catch up, or pin AKMODS_TAG back" \
-              "to a digest matching ${base_kver}."
-            exit 1
+            echo "::warning::Kernel mismatch right now. Base image (${BASE_REF})" \
+              "ships kernel ${base_kver}, but ${AKMODS_REF} currently resolves to a" \
+              "build for kernel ${akmods_kver}. This is a WARNING, not a failure:" \
+              "akmods republishes roughly daily and may catch up before this PR's" \
+              "own build.yml run — that run performs the authoritative check and" \
+              "fails closed if the mismatch still holds then. If this PR's build" \
+              "does fail on the same mismatch, wait for akmods's next publish and" \
+              "re-run rather than editing AKMODS_TAG — it is no longer pinned."
+            exit 0
           fi
 
-          echo "Kernel versions match (${base_kver}). Safe to proceed to the full build."
+          echo "Kernel versions match right now (${base_kver})."

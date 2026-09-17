@@ -53,38 +53,27 @@
     },
 
     // ------------------------------------------------------------------
-    // akmods has no rolling tag, so AKMODS_TAG names a Fedora release
-    // explicitly. Digest bumps within a release are automerged like the base.
+    // akmods is intentionally NOT tracked by Renovate. AKMODS_TAG in the
+    // Containerfile is a bare floating tag (main-44), resolved to a matching
+    // digest at build time by build.yml's "Resolve matching akmods digest" step,
+    // which reads both images' `ostree.linux` label and picks whichever akmods
+    // digest actually matches the base pinned above right now.
     //
-    // The main-44 -> main-45 move is the ONE annual manual edit in this repo.
-    // Renovate raises it on the dashboard rather than opening a PR, because it
-    // must land together with the base having actually crossed to F45; merging it
-    // early would break kmods.
+    // Why: akmods republishes main-44 roughly daily, independently of when
+    // kinoite-nvidia republishes its own `latest`. Pinning both by digest via two
+    // separate Renovate rules (the old design) meant the two pins agreed only by
+    // chance — Renovate opened one PR per side, each bumping only its own ARG, so
+    // neither PR alone could ever land a matched pair even when one briefly
+    // existed upstream. That is a structural property of having two independent
+    // pins, not something any Renovate scheduling option fixes.
     //
-    // A digest bump WITHIN main-44 can still disagree with the base on the exact
-    // kernel build even though both are Fedora 44 (akmods and kinoite-nvidia are
-    // rebuilt on independent schedules). v4l2loopback is a required driver, so
-    // build_files/30-kmods.sh FAILS the build on any mismatch, Fedora release or
-    // kernel build. That failure, not this automerge rule, is the actual safety
-    // mechanism: a bad akmods bump merges but leaves the workflow red and pushes
-    // nothing, same failure model as the base image rule above. Re-dispatch once
-    // the base image's own next rebuild lands the matching kernel.
+    // The main-44 -> main-45 move is still the one annual manual edit in this
+    // repo: bump the bare tag in the Containerfile once the base has actually
+    // crossed to F45. Renovate does not do this for the same reason it never
+    // touched AKMODS_TAG's Fedora-major digit before: doing it early would break
+    // kmods against a base that has not moved yet.
     // ------------------------------------------------------------------
-    {
-      matchPackageNames: ["ghcr.io/ublue-os/akmods"],
-      matchUpdateTypes: ["digest", "pinDigest"],
-      groupName: "akmods",
-      automerge: true,
-      automergeType: "pr",
-      platformAutomerge: true,
-      schedule: ["after 4am and before 7am"],
-    },
-    {
-      matchPackageNames: ["ghcr.io/ublue-os/akmods"],
-      matchUpdateTypes: ["major", "minor"],
-      dependencyDashboardApproval: true,
-      addLabels: ["fedora-rebase", "manual"],
-    },
+
 
     // ------------------------------------------------------------------
     // bootc-image-builder is referenced as a floating :latest in

@@ -29,20 +29,23 @@
 # share one ARG between two FROMs.
 #
 ARG BASE_IMAGE="ghcr.io/ublue-os/kinoite-nvidia"
-ARG BASE_TAG="latest@sha256:333b7172fecd678f732f04e37db8362968dc056efbb9f3e69b26fcc7ab9e235a"
+ARG BASE_TAG="latest@sha256:44121f6d5bf7a72a696ba007a063f2328cb529b5f50f62d7d9087f8d92b4c6f5"
 
 # akmods ships prebuilt, MOK-signed out-of-tree modules built against the *exact*
 # kernel in the base. A scratch image with no shell — the RPMs are bind-mounted below.
 #
-# THIS CANNOT FOLLOW AUTOMATICALLY: akmods has no rolling tag, only main-43, main-44, …
-# (verified). main-44 rolls forward across F44's kernels, so it needs no attention
-# within a release, but when the base crosses to F45 this must become main-45.
+# NOT PINNED BY RENOVATE. akmods republishes main-44 roughly daily, independently of
+# when kinoite-nvidia republishes its own `latest`. Pinning both by digest via two
+# separate Renovate rules meant the two pins agreed only by chance — see
+# .github/workflows/build.yml's "Resolve matching akmods digest" step, which reads
+# BOTH images' `ostree.linux` label at build time (every real build, not just
+# Containerfile-touching PRs) and resolves AKMODS_TAG to whichever akmods digest
+# actually matches the base pinned above right now, failing closed if none does.
 #
-# The single annual edit here, designed not to bite: 30-kmods.sh compares the Fedora
-# version of these RPMs against the base's and warns loudly, naming this line. It does
-# NOT fail the build — a stale akmods costs only the virtual-camera module.
+# main-44 -> main-45 is still the one manual edit needed when the base crosses to a new
+# Fedora release — nothing here resolves that automatically, on purpose.
 ARG AKMODS_IMAGE="ghcr.io/ublue-os/akmods"
-ARG AKMODS_TAG="main-44@sha256:58b4403b4289f52bc2876c5176456a9512c07b943d625aee9c22759a23494bb9"
+ARG AKMODS_TAG="main-44"
 FROM ${AKMODS_IMAGE}:${AKMODS_TAG} AS akmods
 
 FROM scratch AS ctx
