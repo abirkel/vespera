@@ -16,9 +16,9 @@ on:
   # Tuesday, not Saturday/weekend - a fresh promotion lands mid-week rather than right
   # before it, so any regression has weekday attention available, not a weekend gap.
   # Off the exact hour for the same reason build.yml's own cron is: GitHub's scheduler
-  # is most congested at :00.
+  # is most congested at :00. 06:30 UTC = 3:30pm JST Tuesday (author's local time).
   schedule:
-    - cron: '30 8 * * 2'
+    - cron: '30 6 * * 2'
   # Explicit "promote now" escape hatch, matching Bluefin's own documented behaviour
   # ("most images are published weekly, but we may push a new update at any given
   # time"). force=true skips the content gate entirely.
