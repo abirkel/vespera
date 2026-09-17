@@ -4,9 +4,10 @@
     "config:recommended",
     // Keep the noise down: one semantic commit type for everything Renovate does.
     ":semanticCommitTypeAll(chore)",
-    // Only open PRs outside working hours so a rebuild is never racing a
-    // hand-triggered one.
-    "schedule:nonOfficeHours",
+    // No time gating — a matching base/akmods pair should land the moment
+    // Renovate sees it, day or night. The build-then-push failure model
+    // (build.yml builds first, publishes second) is what makes any-hour
+    // automerge safe: a bad update leaves the PR red and publishes nothing.
   ],
 
   timezone: "America/Los_Angeles",
