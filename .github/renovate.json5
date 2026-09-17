@@ -4,9 +4,10 @@
     "config:recommended",
     // Keep the noise down: one semantic commit type for everything Renovate does.
     ":semanticCommitTypeAll(chore)",
-    // Only open PRs outside working hours so a rebuild is never racing a
-    // hand-triggered one.
-    "schedule:nonOfficeHours",
+    // No time gating — a matching base/akmods pair should land the moment
+    // Renovate sees it, day or night. The build-then-push failure model
+    // (build.yml builds first, publishes second) is what makes any-hour
+    // automerge safe: a bad update leaves the PR red and publishes nothing.
   ],
 
   timezone: "America/Los_Angeles",
@@ -49,7 +50,15 @@
       automerge: true,
       automergeType: "pr",
       platformAutomerge: true,
-      schedule: ["after 4am and before 7am"],
+      // No per-rule schedule here — the global `schedule:nonOfficeHours` extend
+      // above already covers "don't race a hand-triggered rebuild". A narrower
+      // window (this used to be "after 4am and before 7am" Pacific) doesn't buy
+      // anything: ublue-os/main's own build-latest.yml has no cron trigger at
+      // all (verified 2026-09-17 by reading it directly) — it rebuilds on PR
+      // merge, at unpredictable times — so there is no upstream cadence to
+      // align a narrow window against. A wider window just gives Renovate more
+      // chances per day to catch a base digest that has a matching akmods
+      // build, which is the whole point of the dynamic-resolution fix below.
       // Renovate's default recreateWhen=auto only recreates "immortal" PRs, and
       // skips opening a new PR if a CLOSED PR already exists with the exact same
       // title (same target digest) — confirmed live 2026-09-17: closed PR #80
