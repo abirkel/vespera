@@ -50,6 +50,15 @@
       automergeType: "pr",
       platformAutomerge: true,
       schedule: ["after 4am and before 7am"],
+      // Renovate's default recreateWhen=auto only recreates "immortal" PRs, and
+      // skips opening a new PR if a CLOSED PR already exists with the exact same
+      // title (same target digest) — confirmed live 2026-09-17: closed PR #80
+      // ("Update kinoite-nvidia base to 44121f6") blocked Renovate from proposing
+      // that same digest again after a deliberate rollback needed it re-proposed.
+      // Base-image bumps are expected to get closed/superseded routinely as part
+      // of normal maintenance (a manual rollback, a race with another change), so
+      // always allow recreation rather than risk a permanently stuck title.
+      recreateWhen: "always",
     },
 
     // ------------------------------------------------------------------
@@ -67,12 +76,26 @@
     // existed upstream. That is a structural property of having two independent
     // pins, not something any Renovate scheduling option fixes.
     //
+    // enabled: false is REQUIRED here, not just "no packageRule for it" — the
+    // repo-level pinDigests: true applies globally regardless of whether a
+    // dependency's version is recognized, and akmods's `main-44` value is
+    // unversioned under docker versioning ("Dependency ghcr.io/ublue-os/akmods
+    // has unsupported/unversioned value main-44"). Without this rule Renovate
+    // still opens a "renovate/pin-dependencies" PR pinning AKMODS_TAG to a
+    // digest — confirmed live on 2026-09-17, the exact coupling this fix exists
+    // to remove, resurrected through the global pin default instead of a
+    // dedicated packageRule.
+    //
     // The main-44 -> main-45 move is still the one annual manual edit in this
     // repo: bump the bare tag in the Containerfile once the base has actually
     // crossed to F45. Renovate does not do this for the same reason it never
     // touched AKMODS_TAG's Fedora-major digit before: doing it early would break
     // kmods against a base that has not moved yet.
     // ------------------------------------------------------------------
+    {
+      matchPackageNames: ["ghcr.io/ublue-os/akmods"],
+      enabled: false,
+    },
 
 
     // ------------------------------------------------------------------
