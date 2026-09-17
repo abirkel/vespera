@@ -180,6 +180,89 @@ jobs:
           echo "version=${VERSION}" >>"$GITHUB_OUTPUT"
           echo "Base ${REF} is Fedora ${FEDORA_MAJOR}; building version ${VERSION}"
 
+      # AKMODS_TAG in the Containerfile is a floating tag (main-44), not a pinned
+      # digest — see the comment above that ARG. Renovate no longer bumps it: akmods
+      # republishes main-44 roughly daily, independently of the base image's own
+      # schedule, so a Renovate-pinned digest for it agreed with the base's pinned
+      # digest only by chance (the recurring stuck-PR problem this step replaces).
+      #
+      # This step is the actual fix: resolve TODAY's akmods digest for this Fedora
+      # major, confirm its `ostree.linux` label matches the base's (same technique
+      # check-kernel-sync.yml already used for pre-merge PR checks — see that
+      # workflow's history), and rewrite AKMODS_TAG in place with the matching
+      # digest before anything downstream reads it. Every later step in this job
+      # (signature verification, the buildah build itself) greps AKMODS_TAG straight
+      # out of the Containerfile, so writing the resolved value back into the file
+      # is what makes this a drop-in replacement for the old Renovate-pinned digest,
+      # with no other step needing to change.
+      #
+      # Runs on EVERY real build (push, schedule, workflow_dispatch) — not just
+      # Containerfile-touching PRs — because there is no longer a committed akmods
+      # digest for a PR-time check to compare against. Fails closed: build_files/
+      # 30-kmods.sh already treats a v4l2loopback/kernel mismatch as fatal, but this
+      # step catches it in seconds instead of after the full ~20 minute compose.
+      - name: Resolve matching akmods digest
+        id: akmods
+        run: |
+          set -euo pipefail
+          BASE_IMAGE="$(grep -oP '^ARG BASE_IMAGE="\K[^"]+' Containerfile)"
+          BASE_TAG="$(grep -oP '^ARG BASE_TAG="\K[^"]+' Containerfile)"
+          AKMODS_IMAGE="$(grep -oP '^ARG AKMODS_IMAGE="\K[^"]+' Containerfile)"
+          AKMODS_TAG="$(grep -oP '^ARG AKMODS_TAG="\K[^"]+' Containerfile)"
+
+          if [[ "${BASE_TAG}" == *@* ]]; then
+            BASE_REF="${BASE_IMAGE}@${BASE_TAG#*@}"
+          else
+            BASE_REF="${BASE_IMAGE}:${BASE_TAG}"
+          fi
+          # AKMODS_TAG is a bare floating tag (e.g. main-44) with no digest to strip.
+          AKMODS_FLOATING_REF="${AKMODS_IMAGE}:${AKMODS_TAG}"
+
+          echo "Base ref          : ${BASE_REF}"
+          echo "Akmods floating ref: ${AKMODS_FLOATING_REF}"
+
+          base_kver="$(
+            skopeo inspect --config "docker://${BASE_REF}" \
+              | python3 .github/scripts/read-ostree-linux-label.py
+          )"
+          akmods_digest="$(
+            skopeo inspect "docker://${AKMODS_FLOATING_REF}" | jq -r '.Digest'
+          )"
+          akmods_kver="$(
+            skopeo inspect --config "docker://${AKMODS_FLOATING_REF}" \
+              | python3 .github/scripts/read-ostree-linux-label.py
+          )"
+
+          echo "base image kernel   : ${base_kver:-<ostree.linux label not found>}"
+          echo "akmods image kernel : ${akmods_kver:-<ostree.linux label not found>}"
+          echo "akmods resolved to  : ${akmods_digest}"
+
+          if [[ -z "${base_kver}" || -z "${akmods_kver}" ]]; then
+            echo "::error::Could not read ostree.linux from one or both images." \
+              "Cannot verify kernel/akmods compatibility; refusing to build."
+            exit 1
+          fi
+
+          if [[ "${base_kver}" != "${akmods_kver}" ]]; then
+            echo "::error::Kernel mismatch. Base image (${BASE_REF}) ships kernel" \
+              "${base_kver}, but the current ${AKMODS_FLOATING_REF}" \
+              "(${akmods_digest}) is built for kernel ${akmods_kver}." \
+              "akmods has not yet republished a build matching this base's kernel." \
+              "This build will not proceed; wait for akmods's next daily" \
+              "publish and re-run, or re-dispatch once it catches up."
+            exit 1
+          fi
+
+          echo "Kernel versions match (${base_kver}). Pinning AKMODS_TAG to the" \
+            "resolved digest for this run."
+
+          RESOLVED_TAG="${AKMODS_TAG}@${akmods_digest}"
+          sed -i "s|^ARG AKMODS_TAG=\"[^\"]*\"|ARG AKMODS_TAG=\"${RESOLVED_TAG}\"|" \
+            Containerfile
+          grep -oP '^ARG AKMODS_TAG="\K[^"]+' Containerfile
+
+          echo "resolved_tag=${RESOLVED_TAG}" >>"$GITHUB_OUTPUT"
+
       - name: Compute tags
         id: tags
         env:
