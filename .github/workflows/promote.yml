@@ -6,22 +6,35 @@ name: Promote to latest
 # `stream: latest` to produce it. See the "Dispatch a latest build" step for why a
 # rebuild was chosen over skopeo copy or rewriting the version label in place.
 on:
-  # After every completed build.yml run. Gated below on conclusion == success, so a
-  # failed or skipped build never reaches the content check.
-  workflow_run:
-    workflows: ["Build image"]
-    types: [completed]
-  # Weekly floor: even if nothing ever triggers the workflow_run path (e.g. a long
-  # run of schedule-only builds with no push), latest is still checked once a week.
-  # Tuesday, not Saturday/weekend - a fresh promotion lands mid-week rather than right
-  # before it, so any regression has weekday attention available, not a weekend gap.
-  # Off the exact hour for the same reason build.yml's own cron is: GitHub's scheduler
-  # is most congested at :00. 06:30 UTC = 3:30pm JST Tuesday (author's local time).
+  # Dispatched DIRECTLY by build.yml's own "Dispatch promote check" step, immediately
+  # after a build that actually published to :testing (changed == 'true', not a
+  # pull_request build, on the default branch) — see that step for the exact gate.
+  # Also dispatchable manually (see the `force` input below).
+  #
+  # NOT a workflow_run trigger on every build.yml completion, on purpose. That was the
+  # original design and it fired this workflow unconditionally for every PR-check
+  # build, every no-op schedule run, everything — most of which then had nothing to
+  # promote and just cluttered the Actions log figuring that out via this workflow's
+  # own in-flight/content gates. Confirmed live 2026-09-18: a single Renovate pass
+  # that opened/rebased four PRs at once produced two visible "Promote to latest"
+  # runs, both skipped, for builds that could never have qualified (PR-check builds).
+  # Gating the DISPATCH on "did this build actually publish" moves that filtering to
+  # the one place that already knows the answer for free (build.yml's own `changed`
+  # output), instead of re-deriving it here after the fact on every single completion.
+  #
+  # Weekly floor below: even if nothing ever triggers the dispatch path (e.g. a long
+  # run of schedule-only builds that never publish a package change), latest is still
+  # checked once a week regardless. Tuesday, not Saturday/weekend - a fresh promotion
+  # lands mid-week rather than right before it, so any regression has weekday
+  # attention available, not a weekend gap. Off the exact hour for the same reason
+  # build.yml's own cron is: GitHub's scheduler is most congested at :00. 06:30 UTC =
+  # 3:30pm JST Tuesday (author's local time).
   schedule:
     - cron: '30 6 * * 2'
   # Explicit "promote now" escape hatch, matching Bluefin's own documented behaviour
   # ("most images are published weekly, but we may push a new update at any given
-  # time"). force=true skips the content gate entirely.
+  # time"). force=true skips the content gate entirely. build.yml's automatic dispatch
+  # never sets force — only a human running this by hand would.
   workflow_dispatch:
     inputs:
       force:
@@ -48,19 +61,10 @@ jobs:
   promote:
     name: Promote testing to latest
     runs-on: ubuntu-24.04
-    # Three ways in. workflow_run must have actually succeeded, and specifically from a
-    # push/schedule/workflow_dispatch build, never a pull_request build - PR builds
-    # never publish anything (build.yml gates every push/sign/attach step on
-    # event_name != pull_request), so there is nothing new for the gate to compare.
-    # Without this, three build.yml runs completing close together (a real push plus
-    # two pull_request runs Renovate's own automation re-triggered) fire three
-    # promote.yml runs, and the pull_request ones fail outright since :testing's
-    # manifest was never touched by them. The other two triggers (schedule,
-    # workflow_dispatch) are unconditional by nature.
-    if: >-
-      github.event_name != 'workflow_run'
-      || (github.event.workflow_run.conclusion == 'success'
-          && github.event.workflow_run.event != 'pull_request')
+    # No job-level event-source guard needed any more: both triggers left on this
+    # workflow (schedule, workflow_dispatch) are unconditionally safe to run — there
+    # is no workflow_run trigger any more to filter a pull_request-sourced completion
+    # out of (see the `on:` block above for why that trigger was removed).
     permissions:
       contents: read
       actions: write
@@ -70,14 +74,16 @@ jobs:
         id: inflight
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # Guards schedule and workflow_dispatch specifically: a workflow_run trigger is
-        # already safe by construction (it only fires once build.yml has fully
-        # completed), but schedule/dispatch have no such guarantee and can land while a
-        # push build is still writing a new :testing digest. Confirmed live: a
-        # workflow_dispatch test here raced an in-progress build.yml push run and
-        # failed to find the manifest, because the digest it read was mid-publish, not
-        # a registry propagation delay. Skipping cleanly here is correct - the next
-        # workflow_run (when that build finishes) or the weekly schedule will re-check.
+        # Guards the schedule trigger specifically: a workflow_dispatch fired by
+        # build.yml's own "Dispatch promote check" step is already safe by
+        # construction (it only fires once that same build has fully finished
+        # publishing), but the weekly schedule has no such guarantee and can land
+        # while some OTHER build.yml run is still writing a new :testing digest.
+        # Confirmed live: a workflow_dispatch test here once raced an in-progress
+        # build.yml push run and failed to find the manifest, because the digest it
+        # read was mid-publish, not a registry propagation delay. Skipping cleanly
+        # here is correct — the next dispatch (once that build finishes) or the
+        # weekly schedule will re-check.
         #
         # SCOPED to push/schedule/workflow_dispatch runs only — a pull_request build.yml
         # run can NEVER publish (every push/sign/attach step there is gated on
@@ -88,8 +94,7 @@ jobs:
         # PR's pull_request ref never collides with the merge push's main ref), which
         # made this guard skip the one promote run that should have caught a real
         # kernel bump. Unscoped --workflow=build.yml counted that orphan as blocking
-        # every single time, with no retry ever coming since a run that never completes
-        # never fires promote.yml's own workflow_run trigger again.
+        # every single time.
         run: |
           set -euo pipefail
           COUNT="$(gh run list --repo "${{ github.repository }}" --workflow=build.yml \
