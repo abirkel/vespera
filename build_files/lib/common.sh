@@ -65,11 +65,24 @@ copr_install() {
 }
 
 # repo_install <repo-glob> <pkg>...   Same idea for negativo17 and Terra.
+#
+# Wrapped in retry: dnf5 can fail on a transient repo-metadata problem that has
+# nothing to do with the packages being requested — confirmed live 2026-09-18, a
+# Terra mirror served a checksum-mismatched repomd.xml (all configured mirrors
+# failed the same way, "No more mirrors to try"), which then made every package in
+# the transaction look unresolvable ("No match for argument") purely because the
+# metadata describing them was unreadable, not because any package name was wrong.
+# Terra's mirror network is third-party/community-run, and terrapkg/packages#16664
+# is an open, unresolved report of the same failure class on a different subrepo —
+# so this is a known-recurring pattern, not a one-off worth chasing at the source.
+# 3 attempts, 30s apart: long enough to outlast a mirror-sync blip, short enough
+# not to meaningfully extend a failing build's wall-clock time before it gives up
+# for a genuinely bad package name instead.
 repo_install() {
     local repo="$1"; shift
     (( $# )) || die "repo_install: no packages given for ${repo}"
     info "repo ${repo}: $*"
-    dnf5 -y install --enable-repo="${repo}" "$@"
+    retry 3 30 dnf5 -y install --enable-repo="${repo}" "$@"
 }
 
 # sync_files [subdir]   Copy system_files/ into the image, preserving symlinks.
