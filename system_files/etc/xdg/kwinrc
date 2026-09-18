@@ -1,0 +1,24 @@
+# PROVENANCE: ours.
+#
+# Tells KWin to launch fcitx5 itself as the Wayland input method, the same
+# setting System Settings -> Virtual Keyboard writes. This is the ONLY correct
+# way to start fcitx5 on KDE Wayland: KWin spawns the process directly
+# (src/inputmethod.cpp's startInputMethod(), confirmed against kwin's own
+# source) and hands it a private WAYLAND_SOCKET fd for the privileged
+# zwp_input_method_v1 binding. A plain XDG autostart entry -- which is all
+# fcitx5-autostart ships, deliberately not installed here -- only ever
+# connects as an ordinary Wayland client over text-input-v2/v3, without that
+# socket, which is what produced the "Wayland Diagnose" warning when this was
+# tried first (GTK_IM_MODULE/QT_IM_MODULE/XMODIFIERS forcing the legacy
+# im-module path on top of it did not fix that; it made it worse, by also
+# displacing Qt's native text-input-v2 support). Per the fcitx5 wiki's own KDE
+# Plasma section, GTK_IM_MODULE/QT_IM_MODULE/SDL_IM_MODULE must NOT be set
+# globally on this path -- so this image sets none of them.
+#
+# Reference: https://fcitx-im.org/wiki/Using_Fcitx_5_on_Wayland#KDE_Plasma
+#
+# InputMethod= is a KConfig path entry read from the standard XDG_CONFIG_DIRS
+# cascade (/etc/xdg here, under the user's own ~/.config/kwinrc), so this
+# applies to every user without a per-account setup step.
+[Wayland]
+InputMethod=/usr/share/applications/org.fcitx.Fcitx5.desktop
