@@ -78,11 +78,25 @@ jobs:
         # failed to find the manifest, because the digest it read was mid-publish, not
         # a registry propagation delay. Skipping cleanly here is correct - the next
         # workflow_run (when that build finishes) or the weekly schedule will re-check.
+        #
+        # SCOPED to push/schedule/workflow_dispatch runs only — a pull_request build.yml
+        # run can NEVER publish (every push/sign/attach step there is gated on
+        # event_name != pull_request), so it can never actually be "mid-publish" and
+        # must never count as in-flight. Confirmed live 2026-09-18: an orphaned PR-check
+        # build for an already-merged PR sat in_progress for 30+ minutes (GitHub never
+        # auto-cancels it — build.yml's concurrency group is keyed on github.ref, and a
+        # PR's pull_request ref never collides with the merge push's main ref), which
+        # made this guard skip the one promote run that should have caught a real
+        # kernel bump. Unscoped --workflow=build.yml counted that orphan as blocking
+        # every single time, with no retry ever coming since a run that never completes
+        # never fires promote.yml's own workflow_run trigger again.
         run: |
           set -euo pipefail
           COUNT="$(gh run list --repo "${{ github.repository }}" --workflow=build.yml \
+            --event=push --event=schedule --event=workflow_dispatch \
             --status=in_progress --json databaseId --jq 'length')"
           COUNT_Q="$(gh run list --repo "${{ github.repository }}" --workflow=build.yml \
+            --event=push --event=schedule --event=workflow_dispatch \
             --status=queued --json databaseId --jq 'length')"
           TOTAL=$(( COUNT + COUNT_Q ))
           echo "in-flight build.yml runs: ${TOTAL}"
