@@ -106,6 +106,28 @@
       enabled: false,
     },
 
+    // ------------------------------------------------------------------
+    // GitHub Actions runner image (runs-on: ubuntu-24.04 in build.yml and
+    // build-disk.yml). DISABLED for now: ublue-os/remove-unwanted-software@v9,
+    // pinned above in build.yml, hardcodes an `apt-get remove -y powershell` call
+    // that does not exist as a package name on ubuntu-26.04 — confirmed live
+    // 2026-09-18, every attempt at this bump fails at the "Free disk space" step
+    // before the real build even starts. A fix already exists upstream (commit
+    // 848e9d69bc..., an unreleased "v10" rewrite that drops the apt-based cleanup
+    // entirely for plain rm -rf) but was never tagged, so there is nothing to bump
+    // TO yet on our side either.
+    //
+    // Without this rule, Renovate keeps re-rebasing/retrying this PR on every run
+    // now that GitHub's own ubuntu-26.04 GA rollout (2026-09-17) makes it look like
+    // a routine dependency bump — cluttering the dashboard and Actions history with
+    // a failure that cannot succeed until one of the two upstream problems above is
+    // resolved. Re-enable once remove-unwanted-software is fixed/replaced.
+    // ------------------------------------------------------------------
+    {
+      matchDatasources: ["github-runners"],
+      matchDepNames: ["ubuntu"],
+      enabled: false,
+    },
 
     // ------------------------------------------------------------------
     // bootc-image-builder is referenced as a floating :latest in

@@ -694,6 +694,7 @@ jobs:
           # verified with `gh attestation verify --owner <owner> oci://<image>`. Only its
           # registry copy is dropped. ublue's image-template attaches no attestation at
           # all, so it never hit this.
+          push-to-registry: false
 
       # Tells promote.yml to check whether THIS publish is worth promoting to :latest,
       # instead of promote.yml reactively polling every build.yml completion via
@@ -720,7 +721,6 @@ jobs:
           gh workflow run promote.yml --repo "${{ github.repository }}" \
             --ref "${{ github.event.repository.default_branch || 'main' }}"
           echo "::notice title=Dispatched::promote.yml (this build published to :${DEFAULT_TAG})"
-          push-to-registry: false
 
 
   # Per-release package changelog, published as a GitHub Release. Separate job because it
