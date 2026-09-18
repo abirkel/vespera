@@ -60,7 +60,7 @@ permissions: {}
 jobs:
   promote:
     name: Promote testing to latest
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # No job-level event-source guard needed any more: both triggers left on this
     # workflow (schedule, workflow_dispatch) are unconditionally safe to run — there
     # is no workflow_run trigger any more to filter a pull_request-sourced completion
