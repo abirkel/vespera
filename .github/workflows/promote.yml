@@ -302,6 +302,14 @@ jobs:
       # dev.vespera.pkg-fingerprint label, containers.bootc, revision — is already
       # correct and already verified (the gate above just re-confirmed it). No other
       # buildah-build step, no dnf, no rechunk: the filesystem layers are untouched.
+      #
+      # No separate "log in to push" step needed: "Log in to GHCR (podman/skopeo)"
+      # near the top of this job already authenticated podman/buildah against this
+      # same registry with these same credentials, for the gate's own read-only
+      # inspects. A second login here was redundant and, confirmed live, caused
+      # "Post Log in to GHCR (podman/skopeo)" to fail its own logout cleanup ("not
+      # logged into ghcr.io/...") since the second login's session had already
+      # superseded the first's.
       - name: Relabel for latest
         id: relabel
         if: steps.inflight.outputs.skip != 'true' && steps.decide.outputs.do_promote == 'true'
@@ -326,14 +334,6 @@ jobs:
           for t in "${TARGET_TAG}" "${VERSION}" "${FEDORA_MAJOR}"; do
             podman tag "${{ steps.relabel.outputs.image_id }}" "localhost/${IMAGE_NAME}:${t}"
           done
-
-      - name: Log in to GHCR (push)
-        if: steps.inflight.outputs.skip != 'true' && steps.decide.outputs.do_promote == 'true'
-        uses: redhat-actions/podman-login@50c2d9a331bb67c8fdab99b86455fad05e2e3252 # v2.0
-        with:
-          registry: ${{ env.IMAGE_REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push relabeled image
         id: push
@@ -385,6 +385,7 @@ jobs:
           oras attach \
             --artifact-type "${ARTIFACT_TYPE}" \
             --annotation filename=packages.json \
+            --disable-path-validation \
             "${IMAGE_REGISTRY}/${IMAGE_NAME}@${{ steps.push.outputs.digest }}" \
             "${TESTING_MANIFEST}:application/json"
           echo "::notice title=Promoted::latest is now ${{ steps.latest_version.outputs.version }}"
