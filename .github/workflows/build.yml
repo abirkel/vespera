@@ -696,31 +696,63 @@ jobs:
           # all, so it never hit this.
           push-to-registry: false
 
-      # Tells promote.yml to check whether THIS publish is worth promoting to :latest,
-      # instead of promote.yml reactively polling every build.yml completion via
-      # workflow_run (the old design — see promote.yml's own `on:` block for why that
-      # was replaced). Dispatching directly, gated on the exact conditions that mean
-      # something new actually landed on :testing, means promote.yml only ever runs
-      # when there is genuinely something to evaluate: never for a pull_request build
-      # (which never publishes), never for a no-op schedule/push build that changed
-      # nothing, and never recursively for the `latest`-stream build that promote.yml
-      # itself dispatches (DEFAULT_TAG != 'latest' guards that — without it, a
-      # successful latest build would dispatch promote.yml again, which would find
-      # testing and latest now identical and just no-op, but there is no reason to run
-      # it at all in that case).
-      - name: Dispatch promote check
+      # Fast path: decide right now whether THIS publish is headline-worthy, using the
+      # SAME script promote.yml's own slow-path (weekly schedule / manual dispatch) also
+      # calls — see .github/scripts/headline-check.py for why it exists in exactly two
+      # places rather than one. packages.json is already sitting in the workdir from
+      # "Decide whether the image changed" above; only :latest's manifest needs fetching.
+      #
+      # Only dispatching promote.yml when this already says yes eliminates the case that
+      # used to clutter the Actions log: promote.yml running on EVERY real publish, doing
+      # a cheap manifest comparison, and usually just saying "nothing headline-worthy,
+      # skipping" — confirmed live 2026-09-18, a single Renovate pass produced two such
+      # empty "Promote to latest" runs in a row. Moving the decision here means most
+      # publishes (a leaf-package bump, a routine base rebuild) never touch promote.yml
+      # at all; it now only ever runs when there is a real chance of promoting.
+      - name: Check if headline-worthy
+        id: headline
         if: >-
           github.event_name != 'pull_request'
           && steps.changed.outputs.changed == 'true'
           && github.ref_name == github.event.repository.default_branch
           && env.DEFAULT_TAG != 'latest'
+        run: |
+          set -euo pipefail
+          LATEST_MANIFEST="$(.github/scripts/fetch-manifest.sh \
+            "${IMAGE_REGISTRY}/${IMAGE_NAME}" latest)"
+          if [[ -z "${LATEST_MANIFEST}" ]]; then
+            # No :latest manifest yet at all (bootstrap case) or a transient registry
+            # blip — either way, defer to promote.yml's own slow path rather than guess.
+            echo "worthy=false" >>"$GITHUB_OUTPUT"
+            echo "::notice title=Headline check::could not read :latest manifest; deferring to promote.yml's own schedule/manual checks."
+            exit 0
+          fi
+          python3 .github/scripts/headline-check.py packages.json "${LATEST_MANIFEST}" \
+            >"${GITHUB_OUTPUT}.headline"
+          cat "${GITHUB_OUTPUT}.headline"
+          if grep -q '^promote=true$' "${GITHUB_OUTPUT}.headline"; then
+            echo "worthy=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "worthy=false" >>"$GITHUB_OUTPUT"
+          fi
+          REASON="$(grep '^reason=' "${GITHUB_OUTPUT}.headline" | cut -d= -f2-)"
+          echo "::notice title=Headline check::${REASON}"
+
+      # Tells promote.yml this specific publish is worth promoting to :latest right now
+      # — see "Check if headline-worthy" above for the gate. promote.yml still
+      # independently re-verifies before actually acting (its own dispatched-path re-run
+      # of the same script against testing/latest's then-CURRENT manifests), since a
+      # newer testing publish could in principle land in the gap between this dispatch
+      # and promote.yml's execution; this step only decides whether to even ask.
+      - name: Dispatch promote check
+        if: steps.headline.outputs.worthy == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           gh workflow run promote.yml --repo "${{ github.repository }}" \
             --ref "${{ github.event.repository.default_branch || 'main' }}"
-          echo "::notice title=Dispatched::promote.yml (this build published to :${DEFAULT_TAG})"
+          echo "::notice title=Dispatched::promote.yml (headline package changed)"
 
 
   # Per-release package changelog, published as a GitHub Release. Separate job because it
