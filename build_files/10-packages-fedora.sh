@@ -98,11 +98,16 @@ KDE=(
 # ---------------------------------------------------------------------------
 # Input method: fcitx5 with Japanese (Mozc) support.
 #
-# fcitx5 core doesn't autostart itself or set GTK_IM_MODULE/QT_IM_MODULE/XMODIFIERS
-# -- that's the separate fcitx5-autostart subpackage. fcitx5-gtk/-qt are the
-# toolkit IM-module shims, fcitx5-configtool/kcm-fcitx5 are the GUI, fcitx5-mozc is
-# the Japanese engine. Env vars are also set redundantly in
-# system_files/usr/lib/environment.d/20-vespera-fcitx5.conf.
+# fcitx5 is started by KWin itself, not by autostart -- see
+# system_files/etc/xdg/kwinrc. fcitx5-autostart is deliberately NOT installed:
+# it ships a plain XDG autostart entry that races the KWin-managed launch and
+# never gets the privileged Wayland input-method socket KWin hands to the
+# process it spawns itself (confirmed against kwin's own source,
+# src/inputmethod.cpp's startInputMethod()). fcitx5-gtk/-qt are the toolkit
+# IM-module shims, fcitx5-configtool/kcm-fcitx5 are the GUI, fcitx5-mozc is
+# the Japanese engine.
+#
+# Reference: https://fcitx-im.org/wiki/Using_Fcitx_5_on_Wayland#KDE_Plasma
 # ---------------------------------------------------------------------------
 IME=(
     fcitx5
@@ -111,7 +116,6 @@ IME=(
     fcitx5-configtool
     kcm-fcitx5
     fcitx5-mozc
-    fcitx5-autostart
 )
 
 # ---------------------------------------------------------------------------
