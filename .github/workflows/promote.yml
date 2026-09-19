@@ -213,8 +213,18 @@ jobs:
       # This step turns that specific case into an actual failed run (red X), while
       # still letting the workflow finish normally: the next workflow_run or the
       # weekly schedule gets a fresh attempt regardless of whether this step fails.
+      #
+      # NOT when force=true. force is the explicit "promote now" escape hatch — it
+      # should bypass a stuck/unreadable comparison too, not just an unfavourable
+      # verdict. Confirmed live 2026-09-19: force=true still hit this failure when
+      # :latest had no manifest attached yet (a genuinely recoverable state — the
+      # tag existed and was pullable, just missing its referrer), which defeated the
+      # entire point of force as an unconditional override.
       - name: Fail loudly if the gate could not resolve
-        if: steps.inflight.outputs.skip != 'true' && steps.gate.outputs.unresolved == 'true'
+        if: >-
+          steps.inflight.outputs.skip != 'true'
+          && steps.gate.outputs.unresolved == 'true'
+          && !(github.event_name == 'workflow_dispatch' && inputs.force)
         run: |
           MSG="${{ steps.gate.outputs.reason }}."
           MSG="${MSG} This run is marked failed so a persistent registry problem is"
