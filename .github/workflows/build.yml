@@ -724,7 +724,8 @@ jobs:
             # No :latest manifest yet at all (bootstrap case) or a transient registry
             # blip — either way, defer to promote.yml's own slow path rather than guess.
             echo "worthy=false" >>"$GITHUB_OUTPUT"
-            echo "::notice title=Headline check::could not read :latest manifest; deferring to promote.yml's own schedule/manual checks."
+            echo "::notice title=Headline check::could not read :latest manifest;" \
+              "deferring to promote.yml's own schedule/manual checks."
             exit 0
           fi
           python3 .github/scripts/headline-check.py packages.json "${LATEST_MANIFEST}" \

@@ -281,8 +281,10 @@ jobs:
           # Fedora major — confirmed live 2026-09-19: without this, `cut -d. -f1` on
           # "testing-44.20260919.2" returns the literal string "testing-44", not "44",
           # which then poisons every downstream tag/version computed from it.
-          TESTING_VERSION="$(skopeo inspect "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${SOURCE_TAG}" \
-            | jq -r '.Labels["org.opencontainers.image.version"]')"
+          TESTING_VERSION="$(
+            skopeo inspect "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${SOURCE_TAG}" \
+              | jq -r '.Labels["org.opencontainers.image.version"]'
+          )"
           FEDORA_MAJOR="$(echo "${TESTING_VERSION#testing-}" | cut -d. -f1)"
           DATE="$(date -u +%Y%m%d)"
           PREFIX="${FEDORA_MAJOR}.${DATE}"
@@ -407,7 +409,8 @@ jobs:
           TESTING_MANIFEST="$(.github/scripts/fetch-manifest.sh \
             "${IMAGE_REGISTRY}/${IMAGE_NAME}" "${SOURCE_TAG}")"
           [[ -n "${TESTING_MANIFEST}" ]] || {
-            echo "::error::could not re-fetch :${SOURCE_TAG}'s manifest to re-attach to :${TARGET_TAG}." >&2
+            echo "::error::could not re-fetch :${SOURCE_TAG}'s manifest to" \
+              "re-attach to :${TARGET_TAG}." >&2
             exit 1
           }
           cp "${TESTING_MANIFEST}" ./packages.json
