@@ -38,11 +38,24 @@ on:
   #
   # Tuesday, not Saturday/weekend - a fresh promotion lands mid-week rather than
   # right before it, so any regression has weekday attention available, not a
-  # weekend gap. Off the exact hour for the same reason build.yml's own cron is:
-  # GitHub's scheduler is most congested at :00. 06:30 UTC = 3:30pm JST Tuesday
-  # (author's local time).
+  # weekend gap.
+  #
+  # RETIMED 2026-09-20 to 08:03 UTC = 17:03 JST Tuesday, from the old 06:30 UTC —
+  # part of a full chain reorder (yeetmouse-rpm 05:00 UTC -> build.yml 06:03 UTC ->
+  # this) around a concrete evening-JST target (fresh :latest by 18:00 JST). The OLD
+  # 06:30 UTC fired 44 minutes BEFORE that same day's build.yml run (07:14 UTC at the
+  # time) — a real ordering bug: the weekly floor was comparing yesterday's :testing
+  # against :latest, not today's, so a headline OR non-headline change introduced by
+  # that day's own build could be missed entirely for a full week. This slot leaves a
+  # ~2-hour gap after build.yml's own ~06:03 UTC start, comfortable against its
+  # observed real build time (10-29 minutes as of 2026-09-20).
+  #
+  # Off the exact hour for the same documented-high-load reason as build.yml's own
+  # cron. Does NOT solve GitHub's scheduler drift itself — see build.yml's cron
+  # comment for the verified severity of that separate problem; this reorder fixes
+  # relative sequencing and margin, not guaranteed on-time firing.
   schedule:
-    - cron: '30 6 * * 2'
+    - cron: '3 8 * * 2'
   # Explicit "promote now" escape hatch, matching Bluefin's own documented behaviour
   # ("most images are published weekly, but we may push a new update at any given
   # time"). force=true skips the content gate entirely. build.yml's automatic dispatch

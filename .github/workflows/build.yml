@@ -8,22 +8,33 @@ on:
     branches: [main]
     paths-ignore: ['**.md', 'LICENSE', 'docs/**']
   schedule:
-    # ~07:00 UTC daily. The base image is rebuilt daily by ublue, and Renovate bumps the
-    # digest pin, but a scheduled build also picks up new Fedora updates in the layers
-    # added on top.
+    # 06:03 UTC = 15:03 JST daily. Re-anchored 2026-09-20 around a concrete evening-JST
+    # target (fresh :latest available by 18:00 JST) rather than the old ~07:00 UTC
+    # anchor, which had drifted from its original rationale as yeetmouse-rpm's own
+    # drift worsened. See promote.yml's weekly-floor cron for the rest of this same
+    # chain and why 06:00 UTC-ish was chosen relative to it.
     #
-    # NOT EARLIER: 30-kmods.sh treats a missing kmod-yeetmouse as fatal, and the kmod for
-    # a newly bumped kernel only exists once abirkel/yeetmouse-rpm has built it — its
-    # check-release workflow runs ~06:00 UTC and takes a few minutes, including the
-    # downstream sign-and-publish in abirkel/rpm-repo and the Pages deploy. This used to
-    # be 05:20, i.e. 40 minutes BEFORE the kmod it depends on could exist, which would
-    # have failed every build on a kernel-bump day.
+    # OFF THE EXACT HOUR ON PURPOSE, same reasoning as before: GitHub's own docs cite
+    # the top of every hour as a documented high-load window for the schedule trigger.
     #
-    # OFF THE EXACT HOUR ON PURPOSE: GitHub's Actions scheduler is most congested at
-    # :00, and check-release's own '0 6 * * *' cron was observed drifting hours late
-    # from 2026-08-27 onward (09:54-18:09 UTC instead of ~06:30). Moving both crons off
-    # the hour doesn't guarantee on-time firing, but avoids the worst-contended slot.
-    - cron: '14 7 * * *'
+    # NOT EARLIER than yeetmouse-rpm's own check-release cron (05:00 UTC / 14:00 JST,
+    # as of 2026-09-20): 30-kmods.sh treats a missing kmod-yeetmouse as fatal, and the
+    # kmod for a newly bumped kernel only exists once that workflow has built it — a
+    # few tens of seconds once it actually fires, plus the downstream sign-and-publish
+    # in abirkel/rpm-repo and the Pages deploy. This ~1-hour gap is comfortable against
+    # that real (short) runtime.
+    #
+    # IMPORTANT CAVEAT, verified 2026-09-20, not solved by this reschedule: GitHub's
+    # own scheduler drift is real and currently severe for yeetmouse-rpm specifically —
+    # its 06:17 UTC cron has been firing 09:14-12:43 UTC over the preceding 9 days
+    # (3-6.5 hours late), despite already being off the top of the hour. Evidence
+    # suggests this repo's drift is not primarily a peak-hour effect (GitHub's own docs
+    # cite low-activity-repo scheduling deprioritization as a distinct, separate cause
+    # from hour-of-day congestion) — so retiming this chain fixes RELATIVE ordering and
+    # margin between these three schedules, but does NOT guarantee any of them fires
+    # anywhere near its nominal time on a given day. A kernel-bump day can still miss
+    # the evening-JST target if yeetmouse-rpm itself drifts as it has recently.
+    - cron: '3 6 * * *'
   workflow_dispatch:
     inputs:
       stream:
