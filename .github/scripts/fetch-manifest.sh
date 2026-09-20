@@ -45,5 +45,12 @@ done
 [[ -n "${artifact_digest}" ]] || exit 0
 
 workdir="$(mktemp -d)"
-oras pull "${IMAGE_REF}@${artifact_digest}" -o "${workdir}" >/dev/null
+# --allow-path-traversal: defensive-in-depth against a referrer whose OWN internal
+# file metadata records an absolute source path (which is exactly what an
+# oras-attach given an absolute path bakes in — see the Attach package manifest
+# step in promote.yml, now fixed to always attach a relative path so this should
+# never recur going forward). Safe here because -o already pins the actual
+# extraction target to our own controlled mktemp dir regardless of what the
+# artifact's internal metadata claims.
+oras pull --allow-path-traversal "${IMAGE_REF}@${artifact_digest}" -o "${workdir}" >/dev/null
 find "${workdir}" -name '*.json' -print -quit
