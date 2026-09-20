@@ -24,12 +24,23 @@ on:
   # output), instead of re-deriving it here after the fact on every single completion.
   #
   # Weekly floor below: even if nothing ever triggers the dispatch path (e.g. a long
-  # run of schedule-only builds that never publish a package change), latest is still
-  # checked once a week regardless. Tuesday, not Saturday/weekend - a fresh promotion
-  # lands mid-week rather than right before it, so any regression has weekday
-  # attention available, not a weekend gap. Off the exact hour for the same reason
-  # build.yml's own cron is: GitHub's scheduler is most congested at :00. 06:30 UTC =
-  # 3:30pm JST Tuesday (author's local time).
+  # run of schedule-only builds that never publish a HEADLINE package change), latest
+  # is still checked once a week regardless — and this trigger specifically PROMOTES
+  # on any drift, headline or not, not just a headline one. Its job is catching what
+  # the daily fast path in build.yml is deliberately blind to: a run of weeks with
+  # only non-headline package movement (security patches to curl, openssl, etc.)
+  # would otherwise sit in :testing indefinitely, since no single day's build ever
+  # crosses the headline threshold that gates the fast path. See "Decide whether to
+  # promote" for the exact three-way policy split (force / schedule / everything
+  # else) — the schedule trigger still correctly skips a GENUINE no-op week (testing
+  # and latest already share the same whole-package fingerprint), so this is not the
+  # same as force=true.
+  #
+  # Tuesday, not Saturday/weekend - a fresh promotion lands mid-week rather than
+  # right before it, so any regression has weekday attention available, not a
+  # weekend gap. Off the exact hour for the same reason build.yml's own cron is:
+  # GitHub's scheduler is most congested at :00. 06:30 UTC = 3:30pm JST Tuesday
+  # (author's local time).
   schedule:
     - cron: '30 6 * * 2'
   # Explicit "promote now" escape hatch, matching Bluefin's own documented behaviour
@@ -201,6 +212,27 @@ jobs:
           python3 .github/scripts/headline-check.py \
             "${TESTING_MANIFEST}" "${LATEST_MANIFEST}" >>"$GITHUB_OUTPUT"
 
+          # WHOLE-package-set comparison, separate from the headline-only verdict
+          # above — needed for the weekly schedule's own "bypass the headline gate,
+          # but still don't promote a genuine no-op" case (see "Decide whether to
+          # promote" below). A pure fingerprint match here means testing and latest
+          # are ALREADY byte-identical, headline-worthy or not, so retagging would
+          # produce a new digest/version/release for content that has not actually
+          # changed at all — exactly the client-side no-op-update churn build.yml's
+          # own "Decide whether the image changed" step exists to prevent one level
+          # down; this is that same guard, one level up.
+          TESTING_FP="$(
+            skopeo inspect "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${SOURCE_TAG}" \
+              | jq -r '.Labels["dev.vespera.pkg-fingerprint"] // empty'
+          )"
+          LATEST_FP="$(skopeo inspect "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${TARGET_TAG}" \
+            | jq -r '.Labels["dev.vespera.pkg-fingerprint"] // empty')"
+          if [[ -n "${TESTING_FP}" && "${TESTING_FP}" == "${LATEST_FP}" ]]; then
+            echo "noop=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "noop=false" >>"$GITHUB_OUTPUT"
+          fi
+
       - name: Report gate result
         if: steps.inflight.outputs.skip != 'true'
         run: |
@@ -236,17 +268,49 @@ jobs:
 
       # force=true (workflow_dispatch only) bypasses the gate entirely — the explicit
       # "promote now" escape hatch. Every other trigger respects the gate's verdict.
+      #
+      # THREE distinct policies, not two — force, schedule, and everything else each
+      # bypass a different combination of the two checks the gate now computes:
+      #   - force=true (manual workflow_dispatch): bypasses BOTH the headline check
+      #     and the no-op fingerprint check. The explicit "I know what I'm doing,
+      #     just do it" escape hatch — even a genuine no-op should still push
+      #     something if a human asked for it by name.
+      #   - schedule (the weekly floor): bypasses ONLY the headline check, not the
+      #     no-op one. Its whole job is to catch drift that never crossed the
+      #     headline threshold on any single day (a run of weeks with only
+      #     non-headline security patches, say — the daily fast path in build.yml
+      #     would correctly never promote any of those on its own, and they would
+      #     otherwise sit in :testing indefinitely). But if the week was GENUINELY
+      #     quiet — testing and latest already share the same whole-package
+      #     fingerprint — promoting anyway would still be the exact no-op-update
+      #     churn build.yml's own "Decide whether the image changed" step exists to
+      #     prevent, one level up. So the weekly floor promotes on drift, headline
+      #     or not, but still skips a true no-op.
+      #   - the build.yml-dispatched path (and a plain manual dispatch without
+      #     force): respects both checks, unchanged from before this policy split.
       - name: Decide whether to promote
         id: decide
         if: steps.inflight.outputs.skip != 'true'
         env:
           FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
+          IS_SCHEDULE: ${{ github.event_name == 'schedule' }}
           GATE_PROMOTE: ${{ steps.gate.outputs.promote }}
+          NOOP: ${{ steps.gate.outputs.noop }}
         run: |
           set -euo pipefail
           if [[ "${FORCE}" == "true" ]]; then
             echo "do_promote=true" >>"$GITHUB_OUTPUT"
             echo "::notice title=Promoting::forced via workflow_dispatch (force=true)."
+          elif [[ "${IS_SCHEDULE}" == "true" && "${NOOP}" != "true" ]]; then
+            echo "do_promote=true" >>"$GITHUB_OUTPUT"
+            MSG="weekly floor — promoting regardless of headline verdict"
+            MSG="${MSG} (testing/latest differ; not a no-op)."
+            echo "::notice title=Promoting::${MSG}"
+          elif [[ "${IS_SCHEDULE}" == "true" && "${NOOP}" == "true" ]]; then
+            echo "do_promote=false" >>"$GITHUB_OUTPUT"
+            MSG="weekly floor — testing and latest already share the same package"
+            MSG="${MSG} fingerprint; a genuine no-op week, nothing to promote."
+            echo "::notice title=Skipping::${MSG}"
           elif [[ "${GATE_PROMOTE}" == "true" ]]; then
             echo "do_promote=true" >>"$GITHUB_OUTPUT"
             echo "::notice title=Promoting::content gate found a qualifying change."
