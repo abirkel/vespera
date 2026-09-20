@@ -276,8 +276,14 @@ jobs:
           # to the bare (unprefixed) tag space latest/44.YYYYMMDD[.N] uses — a latest
           # build must only ever look at bare tags, never testing-* ones, or the two
           # streams' independent day-counters would collide.
-          FEDORA_MAJOR="$(skopeo inspect "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${SOURCE_TAG}" \
-            | jq -r '.Labels["org.opencontainers.image.version"]' | cut -d. -f1)"
+          #
+          # Strip the "testing-" prefix (if any) before splitting on "." for the
+          # Fedora major — confirmed live 2026-09-19: without this, `cut -d. -f1` on
+          # "testing-44.20260919.2" returns the literal string "testing-44", not "44",
+          # which then poisons every downstream tag/version computed from it.
+          TESTING_VERSION="$(skopeo inspect "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${SOURCE_TAG}" \
+            | jq -r '.Labels["org.opencontainers.image.version"]')"
+          FEDORA_MAJOR="$(echo "${TESTING_VERSION#testing-}" | cut -d. -f1)"
           DATE="$(date -u +%Y%m%d)"
           PREFIX="${FEDORA_MAJOR}.${DATE}"
           TAGS_JSON="$(skopeo list-tags "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}" \
@@ -381,6 +387,18 @@ jobs:
       # Re-attach the SAME manifest JSON testing's build already verified — the
       # package set has not changed, only the label, so there is nothing new to
       # regenerate here.
+      #
+      # Copied to a RELATIVE filename in the workdir before attaching, matching
+      # build.yml's own known-good "Attach package manifest" pattern exactly (it
+      # always attaches a plain packages.json from the working directory, never an
+      # absolute path). Confirmed live 2026-09-19: attaching fetch-manifest.sh's
+      # absolute mktemp path directly (with --disable-path-validation to get past
+      # oras attach's own guard) produced a referrer that changelog.py's oras PULL
+      # then refused with "path traversal disallowed" — something about how oras
+      # attach records an absolute source path in the artifact's own manifest, which
+      # a later `oras pull` of that same artifact treats as suspicious. Copying to a
+      # relative name first avoids the whole problem rather than chasing it further
+      # on the pull side too.
       - name: Attach package manifest
         id: attach
         if: steps.inflight.outputs.skip != 'true' && steps.decide.outputs.do_promote == 'true'
@@ -392,12 +410,12 @@ jobs:
             echo "::error::could not re-fetch :${SOURCE_TAG}'s manifest to re-attach to :${TARGET_TAG}." >&2
             exit 1
           }
+          cp "${TESTING_MANIFEST}" ./packages.json
           oras attach \
             --artifact-type "${ARTIFACT_TYPE}" \
             --annotation filename=packages.json \
-            --disable-path-validation \
             "${IMAGE_REGISTRY}/${IMAGE_NAME}@${{ steps.push.outputs.digest }}" \
-            "${TESTING_MANIFEST}:application/json"
+            packages.json:application/json
           echo "::notice title=Promoted::latest is now ${{ steps.latest_version.outputs.version }}"
 
       # Same provenance attestation build.yml's own build attaches to every real
