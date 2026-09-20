@@ -173,7 +173,12 @@ def get_packages(tag: str):
     if match is None:
         raise RuntimeError(f"no {ARTIFACT_TYPE} referrer on {tag}")
     with tempfile.TemporaryDirectory() as tmp:
-        run(["oras", "pull", f"{REGISTRY}/{IMAGE}@{match['digest']}"], cwd=tmp)
+        # --allow-path-traversal: defensive-in-depth against a referrer whose own
+        # internal file metadata records an absolute source path — see the identical
+        # flag in .github/scripts/fetch-manifest.sh for the full story. Safe here for
+        # the same reason: cwd=tmp already pins the actual extraction target
+        # regardless of what the artifact's internal metadata claims.
+        run(["oras", "pull", "--allow-path-traversal", f"{REGISTRY}/{IMAGE}@{match['digest']}"], cwd=tmp)
         for name in os.listdir(tmp):
             if name.endswith(".json"):
                 with open(os.path.join(tmp, name)) as f:

@@ -1,10 +1,11 @@
 ---
 name: Promote to latest
-# Promotion is a REAL BUILD dispatch, not a re-tag. testing already builds every day
-# (see build.yml); this workflow's job is deciding WHEN a genuinely new, separately
-# built and signed `latest` is warranted, then dispatching build.yml with
-# `stream: latest` to produce it. See the "Dispatch a latest build" step for why a
-# rebuild was chosen over skopeo copy or rewriting the version label in place.
+# Promotion is a RETAG + RELABEL of testing's already-built, already-verified image —
+# not a rebuild, and not a plain `skopeo copy` either. testing already builds every day
+# (see build.yml); this workflow's job is deciding WHEN a promotion is warranted, then
+# pulling that exact digest, rewriting its version label (buildah config --label, no
+# recompile), and re-pushing/signing/attaching/releasing under :latest. See the
+# "Relabel for latest" step for exactly what changes and what does not.
 on:
   # Dispatched DIRECTLY by build.yml's own "Dispatch promote check" step, immediately
   # after a build that actually published to :testing (changed == 'true', not a
@@ -23,14 +24,38 @@ on:
   # output), instead of re-deriving it here after the fact on every single completion.
   #
   # Weekly floor below: even if nothing ever triggers the dispatch path (e.g. a long
-  # run of schedule-only builds that never publish a package change), latest is still
-  # checked once a week regardless. Tuesday, not Saturday/weekend - a fresh promotion
-  # lands mid-week rather than right before it, so any regression has weekday
-  # attention available, not a weekend gap. Off the exact hour for the same reason
-  # build.yml's own cron is: GitHub's scheduler is most congested at :00. 06:30 UTC =
-  # 3:30pm JST Tuesday (author's local time).
+  # run of schedule-only builds that never publish a HEADLINE package change), latest
+  # is still checked once a week regardless — and this trigger specifically PROMOTES
+  # on any drift, headline or not, not just a headline one. Its job is catching what
+  # the daily fast path in build.yml is deliberately blind to: a run of weeks with
+  # only non-headline package movement (security patches to curl, openssl, etc.)
+  # would otherwise sit in :testing indefinitely, since no single day's build ever
+  # crosses the headline threshold that gates the fast path. See "Decide whether to
+  # promote" for the exact three-way policy split (force / schedule / everything
+  # else) — the schedule trigger still correctly skips a GENUINE no-op week (testing
+  # and latest already share the same whole-package fingerprint), so this is not the
+  # same as force=true.
+  #
+  # Tuesday, not Saturday/weekend - a fresh promotion lands mid-week rather than
+  # right before it, so any regression has weekday attention available, not a
+  # weekend gap.
+  #
+  # RETIMED 2026-09-20 to 08:03 UTC = 17:03 JST Tuesday, from the old 06:30 UTC —
+  # part of a full chain reorder (yeetmouse-rpm 05:00 UTC -> build.yml 06:03 UTC ->
+  # this) around a concrete evening-JST target (fresh :latest by 18:00 JST). The OLD
+  # 06:30 UTC fired 44 minutes BEFORE that same day's build.yml run (07:14 UTC at the
+  # time) — a real ordering bug: the weekly floor was comparing yesterday's :testing
+  # against :latest, not today's, so a headline OR non-headline change introduced by
+  # that day's own build could be missed entirely for a full week. This slot leaves a
+  # ~2-hour gap after build.yml's own ~06:03 UTC start, comfortable against its
+  # observed real build time (10-29 minutes as of 2026-09-20).
+  #
+  # Off the exact hour for the same documented-high-load reason as build.yml's own
+  # cron. Does NOT solve GitHub's scheduler drift itself — see build.yml's cron
+  # comment for the verified severity of that separate problem; this reorder fixes
+  # relative sequencing and margin, not guaranteed on-time firing.
   schedule:
-    - cron: '30 6 * * 2'
+    - cron: '3 8 * * 2'
   # Explicit "promote now" escape hatch, matching Bluefin's own documented behaviour
   # ("most images are published weekly, but we may push a new update at any given
   # time"). force=true skips the content gate entirely. build.yml's automatic dispatch
@@ -66,10 +91,27 @@ jobs:
     # is no workflow_run trigger any more to filter a pull_request-sourced completion
     # out of (see the `on:` block above for why that trigger was removed).
     permissions:
-      contents: read
+      # write, not read: this job now creates the GitHub Release directly (ported
+      # from build.yml's own release job, since there is no longer a dispatched
+      # build.yml run to do it).
+      contents: write
       actions: write
       packages: write
+      id-token: write
+      attestations: write
     steps:
+      # Needed from here on: .github/scripts/*.sh and .github/changelog.py are called
+      # by path throughout this job (the gate, the relabel steps, the release step),
+      # and this workflow previously never checked out the repo at all — it only ever
+      # dispatched build.yml, which does its own checkout. fetch-depth: 500 up front
+      # (rather than a second, deeper checkout later just for the release step) is
+      # what the release step's commit table needs; ublue uses 500 for the same
+      # reason, and the default depth of 1 would make that section silently empty.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 500
+
       - name: Check for an in-flight build
         id: inflight
         env:
@@ -144,74 +186,22 @@ jobs:
       # "Attach package manifest" step writes on every publish, so this needs no new
       # data, no image pull, and no rebuild.
       #
-      # HEADLINE PACKAGES ONLY, deliberately excluding the base image label. Kinoite's
-      # base image is rebuilt by ublue nearly every day, and build.yml's own no-op
-      # gate already showed that a same-content rebuild still moves the base's
-      # ostree.commit/version daily even when nothing it ships actually changed. If
-      # that label move alone triggered an early promotion, this gate would promote
-      # almost every day - exactly the client-side update churn the weekly-by-default
-      # promotion cadence exists to avoid. A pure base rebuild (or base rebuild plus
-      # only leaf-package movement) is left for the weekly schedule to pick up; only a
-      # change to a HEADLINE package - the ones with real day-to-day desktop impact -
-      # is worth promoting early for.
-      #
-      # HEADLINE set matches .github/changelog.py's HEADLINE_PKGS exactly (kernel, KDE,
-      # Mesa, Nvidia, Podman, Bootc, Flatpak, OSTree, RPM-OSTree). Anything outside that
-      # set (a leaf library bump, or the base image moving with no headline-package
-      # change) does not trigger a promotion on its own; the weekly schedule trigger is
-      # what eventually picks those up in aggregate.
+      # HEADLINE PACKAGES ONLY, deliberately excluding the base image label — see
+      # .github/scripts/headline-check.py (SHARED with build.yml's own fast-path check;
+      # this is the slow-path / safety-net copy, exercised by this workflow's own
+      # schedule and workflow_dispatch triggers, which have no upstream build.yml
+      # decision to rely on).
       - name: Compare testing against latest
         id: gate
         if: steps.inflight.outputs.skip != 'true'
         run: |
           set -euo pipefail
+          TESTING_MANIFEST="$(.github/scripts/fetch-manifest.sh \
+            "${IMAGE_REGISTRY}/${IMAGE_NAME}" "${SOURCE_TAG}")"
+          LATEST_MANIFEST="$(.github/scripts/fetch-manifest.sh \
+            "${IMAGE_REGISTRY}/${IMAGE_NAME}" "${TARGET_TAG}")"
 
-          fetch_manifest_json() {
-            local tag="$1" digest artifact_digest workdir attempt
-            # Modest retry only, as defense against a genuine transient blip. NOT sized
-            # for a real propagation delay: three straight failures here turned out to
-            # be a jq filter bug (oras 1.3.x's `discover --format json` nests referrers
-            # under `.referrers`, not the older `.manifests` this originally assumed),
-            # not the registry, so retrying longer was never going to help. Fixed to
-            # accept either key. Kept short (4x10s=40s) on purpose now that the actual
-            # cause is fixed - a long retry here was hiding a real bug behind a
-            # plausible-sounding "eventual consistency" story for three runs in a row.
-            for attempt in 1 2 3 4; do
-              digest="$(skopeo inspect \
-                  "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${tag}" 2>/dev/null \
-                | jq -r '.Digest // empty')"
-              [[ -n "${digest}" ]] && break
-              MSG="${tag}: digest not found yet (attempt ${attempt}/4), retrying in 10s"
-              echo "::notice::${MSG}" >&2
-              sleep 10
-            done
-            [[ -n "${digest}" ]] || { echo ""; return; }
-
-            for attempt in 1 2 3 4; do
-              artifact_digest="$(
-                oras discover --format json "${IMAGE_REGISTRY}/${IMAGE_NAME}@${digest}" \
-                  | jq -r --arg t "${ARTIFACT_TYPE}" \
-                      '(.referrers // .manifests // [])[]?
-                       | select(.artifactType == $t) | .digest'
-              )"
-              artifact_digest="$(printf '%s\n' "${artifact_digest}" | head -1)"
-              [[ -n "${artifact_digest}" ]] && break
-              MSG="${tag}: manifest referrer not found yet (attempt ${attempt}/4), retrying in 10s"
-              echo "::notice::${MSG}" >&2
-              sleep 10
-            done
-            [[ -n "${artifact_digest}" ]] || { echo ""; return; }
-
-            workdir="$(mktemp -d)"
-            oras pull "${IMAGE_REGISTRY}/${IMAGE_NAME}@${artifact_digest}" \
-              -o "${workdir}" >/dev/null
-            find "${workdir}" -name '*.json' -print -quit
-          }
-
-          TESTING_JSON="$(fetch_manifest_json "${SOURCE_TAG}")"
-          LATEST_JSON="$(fetch_manifest_json "${TARGET_TAG}")"
-
-          if [[ -z "${TESTING_JSON}" ]]; then
+          if [[ -z "${TESTING_MANIFEST}" ]]; then
             echo "unresolved=true" >>"$GITHUB_OUTPUT"
             echo "promote=false" >>"$GITHUB_OUTPUT"
             echo "reason=could not read :${SOURCE_TAG} manifest after retrying" >>"$GITHUB_OUTPUT"
@@ -225,50 +215,36 @@ jobs:
           # (registry issue, manifest never attached, tag deleted) rather than an
           # expected first-run state - so it is treated the same as an unresolved
           # :testing read: a loud failure, not a silent "promote anyway".
-          if [[ -z "${LATEST_JSON}" ]]; then
+          if [[ -z "${LATEST_MANIFEST}" ]]; then
             echo "unresolved=true" >>"$GITHUB_OUTPUT"
             echo "promote=false" >>"$GITHUB_OUTPUT"
             echo "reason=could not read :${TARGET_TAG} manifest after retrying" >>"$GITHUB_OUTPUT"
             exit 0
           fi
 
-          python3 - "${TESTING_JSON}" "${LATEST_JSON}" <<'PY' >>"$GITHUB_OUTPUT"
-          import json, sys
+          python3 .github/scripts/headline-check.py \
+            "${TESTING_MANIFEST}" "${LATEST_MANIFEST}" >>"$GITHUB_OUTPUT"
 
-          HEADLINE_PKGS = {
-              "kernel-core", "plasma-desktop", "mesa-filesystem", "nvidia-driver",
-              "podman", "bootc", "flatpak", "ostree", "rpm-ostree",
-          }
-
-          def load(path):
-              with open(path) as f:
-                  return json.load(f)
-
-          testing, latest = load(sys.argv[1]), load(sys.argv[2])
-
-          def versions(doc):
-              out = {}
-              for art in doc.get("artifacts", []):
-                  if art.get("type") == "rpm" and art.get("name"):
-                      out[art["name"]] = art.get("version")
-              return out
-
-          tv, lv = versions(testing), versions(latest)
-          changed_headline = sorted(
-              n for n in HEADLINE_PKGS
-              if tv.get(n) != lv.get(n)
-          )
-
-          # Base image identity is intentionally NOT checked here - see the step
-          # comment above. It moves almost daily on its own and would otherwise
-          # promote almost every day, defeating the point of a weekly-by-default cadence.
-          if changed_headline:
-              print("promote=true")
-              print("reason=headline packages changed: " + ", ".join(changed_headline))
-          else:
-              print("promote=false")
-              print("reason=no headline package change since last promotion")
-          PY
+          # WHOLE-package-set comparison, separate from the headline-only verdict
+          # above — needed for the weekly schedule's own "bypass the headline gate,
+          # but still don't promote a genuine no-op" case (see "Decide whether to
+          # promote" below). A pure fingerprint match here means testing and latest
+          # are ALREADY byte-identical, headline-worthy or not, so retagging would
+          # produce a new digest/version/release for content that has not actually
+          # changed at all — exactly the client-side no-op-update churn build.yml's
+          # own "Decide whether the image changed" step exists to prevent one level
+          # down; this is that same guard, one level up.
+          TESTING_FP="$(
+            skopeo inspect "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${SOURCE_TAG}" \
+              | jq -r '.Labels["dev.vespera.pkg-fingerprint"] // empty'
+          )"
+          LATEST_FP="$(skopeo inspect "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${TARGET_TAG}" \
+            | jq -r '.Labels["dev.vespera.pkg-fingerprint"] // empty')"
+          if [[ -n "${TESTING_FP}" && "${TESTING_FP}" == "${LATEST_FP}" ]]; then
+            echo "noop=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "noop=false" >>"$GITHUB_OUTPUT"
+          fi
 
       - name: Report gate result
         if: steps.inflight.outputs.skip != 'true'
@@ -282,8 +258,18 @@ jobs:
       # This step turns that specific case into an actual failed run (red X), while
       # still letting the workflow finish normally: the next workflow_run or the
       # weekly schedule gets a fresh attempt regardless of whether this step fails.
+      #
+      # NOT when force=true. force is the explicit "promote now" escape hatch — it
+      # should bypass a stuck/unreadable comparison too, not just an unfavourable
+      # verdict. Confirmed live 2026-09-19: force=true still hit this failure when
+      # :latest had no manifest attached yet (a genuinely recoverable state — the
+      # tag existed and was pullable, just missing its referrer), which defeated the
+      # entire point of force as an unconditional override.
       - name: Fail loudly if the gate could not resolve
-        if: steps.inflight.outputs.skip != 'true' && steps.gate.outputs.unresolved == 'true'
+        if: >-
+          steps.inflight.outputs.skip != 'true'
+          && steps.gate.outputs.unresolved == 'true'
+          && !(github.event_name == 'workflow_dispatch' && inputs.force)
         run: |
           MSG="${{ steps.gate.outputs.reason }}."
           MSG="${MSG} This run is marked failed so a persistent registry problem is"
@@ -295,17 +281,49 @@ jobs:
 
       # force=true (workflow_dispatch only) bypasses the gate entirely — the explicit
       # "promote now" escape hatch. Every other trigger respects the gate's verdict.
+      #
+      # THREE distinct policies, not two — force, schedule, and everything else each
+      # bypass a different combination of the two checks the gate now computes:
+      #   - force=true (manual workflow_dispatch): bypasses BOTH the headline check
+      #     and the no-op fingerprint check. The explicit "I know what I'm doing,
+      #     just do it" escape hatch — even a genuine no-op should still push
+      #     something if a human asked for it by name.
+      #   - schedule (the weekly floor): bypasses ONLY the headline check, not the
+      #     no-op one. Its whole job is to catch drift that never crossed the
+      #     headline threshold on any single day (a run of weeks with only
+      #     non-headline security patches, say — the daily fast path in build.yml
+      #     would correctly never promote any of those on its own, and they would
+      #     otherwise sit in :testing indefinitely). But if the week was GENUINELY
+      #     quiet — testing and latest already share the same whole-package
+      #     fingerprint — promoting anyway would still be the exact no-op-update
+      #     churn build.yml's own "Decide whether the image changed" step exists to
+      #     prevent, one level up. So the weekly floor promotes on drift, headline
+      #     or not, but still skips a true no-op.
+      #   - the build.yml-dispatched path (and a plain manual dispatch without
+      #     force): respects both checks, unchanged from before this policy split.
       - name: Decide whether to promote
         id: decide
         if: steps.inflight.outputs.skip != 'true'
         env:
           FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
+          IS_SCHEDULE: ${{ github.event_name == 'schedule' }}
           GATE_PROMOTE: ${{ steps.gate.outputs.promote }}
+          NOOP: ${{ steps.gate.outputs.noop }}
         run: |
           set -euo pipefail
           if [[ "${FORCE}" == "true" ]]; then
             echo "do_promote=true" >>"$GITHUB_OUTPUT"
             echo "::notice title=Promoting::forced via workflow_dispatch (force=true)."
+          elif [[ "${IS_SCHEDULE}" == "true" && "${NOOP}" != "true" ]]; then
+            echo "do_promote=true" >>"$GITHUB_OUTPUT"
+            MSG="weekly floor — promoting regardless of headline verdict"
+            MSG="${MSG} (testing/latest differ; not a no-op)."
+            echo "::notice title=Promoting::${MSG}"
+          elif [[ "${IS_SCHEDULE}" == "true" && "${NOOP}" == "true" ]]; then
+            echo "do_promote=false" >>"$GITHUB_OUTPUT"
+            MSG="weekly floor — testing and latest already share the same package"
+            MSG="${MSG} fingerprint; a genuine no-op week, nothing to promote."
+            echo "::notice title=Skipping::${MSG}"
           elif [[ "${GATE_PROMOTE}" == "true" ]]; then
             echo "do_promote=true" >>"$GITHUB_OUTPUT"
             echo "::notice title=Promoting::content gate found a qualifying change."
@@ -315,99 +333,211 @@ jobs:
             echo "::notice title=Skipping::${MSG}"
           fi
 
-      # Promotion is now a REAL BUILD, not a re-tag. skopeo copy would leave `latest`
-      # carrying the same testing-<major>.<date>.<n> org.opencontainers.image.version
-      # label the source build had — technically fine for bootc/rpm-ostree, but
-      # confusing on a release build (`rpm-ostree status` on a machine tracking
-      # `latest` would show "Version: testing-..." forever). Dispatching build.yml
-      # with `stream: latest` gets `latest` its own genuine build, sign and attest
-      # cycle from the SAME commit, with its own bare (unprefixed) version label -
-      # the tradeoff being real build time and cost instead of an instant re-tag,
-      # which is the explicit choice made here over re-tagging or rewriting the label
-      # in place.
-      - name: Dispatch a latest build
-        id: dispatch
+      # Promotion is a RETAG + RELABEL of the already-built, already-verified :testing
+      # image, not a second build. It USED TO dispatch build.yml with `stream: latest`
+      # to produce a genuinely separate build — confirmed live 2026-09-19 that this
+      # second build reproduced byte-identical package content (same
+      # dev.vespera.pkg-fingerprint label) to the testing build moments earlier, at the
+      # cost of a full ~20-30 minute rebuild purely to get a different version label
+      # onto otherwise-identical content. The only thing a rebuild bought over a plain
+      # `skopeo copy` was an honest, unprefixed org.opencontainers.image.version label
+      # (skopeo copy would leave `latest` carrying `testing-44.20260919.1` forever,
+      # confusing on a release build) — buildah can rewrite that ONE label in place,
+      # with no recompile, which is what this step now does.
+      - name: Compute latest version
+        id: latest_version
+        if: steps.inflight.outputs.skip != 'true' && steps.decide.outputs.do_promote == 'true'
+        run: |
+          set -euo pipefail
+          # Same numbering scheme as build.yml's own "Compute version" step, but scoped
+          # to the bare (unprefixed) tag space latest/44.YYYYMMDD[.N] uses — a latest
+          # build must only ever look at bare tags, never testing-* ones, or the two
+          # streams' independent day-counters would collide.
+          #
+          # Strip the "testing-" prefix (if any) before splitting on "." for the
+          # Fedora major — confirmed live 2026-09-19: without this, `cut -d. -f1` on
+          # "testing-44.20260919.2" returns the literal string "testing-44", not "44",
+          # which then poisons every downstream tag/version computed from it.
+          TESTING_VERSION="$(
+            skopeo inspect "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${SOURCE_TAG}" \
+              | jq -r '.Labels["org.opencontainers.image.version"]'
+          )"
+          FEDORA_MAJOR="$(echo "${TESTING_VERSION#testing-}" | cut -d. -f1)"
+          DATE="$(date -u +%Y%m%d)"
+          PREFIX="${FEDORA_MAJOR}.${DATE}"
+          TAGS_JSON="$(skopeo list-tags "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}" \
+                       2>/dev/null || echo '{"Tags":[]}')"
+          BARE_EXISTS="$(jq -r --arg p "${PREFIX}" '.Tags[]? | select(. == $p)' <<<"${TAGS_JSON}")"
+          HIGHEST="$(jq -r --arg p "${PREFIX}." \
+                       '.Tags[]? | select(startswith($p)) | ltrimstr($p)' <<<"${TAGS_JSON}" \
+                     | grep -xE '[0-9]+' | sort -n | tail -1 || true)"
+          if [[ -z "${BARE_EXISTS}" && -z "${HIGHEST}" ]]; then
+            VERSION="${PREFIX}"
+          else
+            VERSION="${PREFIX}.$(( ${HIGHEST:-0} + 1 ))"
+          fi
+          echo "fedora_major=${FEDORA_MAJOR}" >>"$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >>"$GITHUB_OUTPUT"
+          echo "::notice title=Version::promoting as ${VERSION}"
+
+      # Pull testing's exact digest (not the moving tag — a push could land on
+      # :testing between the gate's read and here) into local storage, no compose.
+      - name: Pull testing image
+        id: pull
+        if: steps.inflight.outputs.skip != 'true' && steps.decide.outputs.do_promote == 'true'
+        run: |
+          set -euo pipefail
+          DIGEST="$(skopeo inspect "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${SOURCE_TAG}" \
+            | jq -r '.Digest')"
+          echo "digest=${DIGEST}" >>"$GITHUB_OUTPUT"
+          buildah pull "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+          echo "::notice title=Pulled::${IMAGE_REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+
+      # Rewrite ONLY the version label. Everything else — the package set, the
+      # dev.vespera.pkg-fingerprint label, containers.bootc, revision — is already
+      # correct and already verified (the gate above just re-confirmed it). No other
+      # buildah-build step, no dnf, no rechunk: the filesystem layers are untouched.
+      #
+      # No separate "log in to push" step needed: "Log in to GHCR (podman/skopeo)"
+      # near the top of this job already authenticated podman/buildah against this
+      # same registry with these same credentials, for the gate's own read-only
+      # inspects. A second login here was redundant and, confirmed live, caused
+      # "Post Log in to GHCR (podman/skopeo)" to fail its own logout cleanup ("not
+      # logged into ghcr.io/...") since the second login's session had already
+      # superseded the first's.
+      - name: Relabel for latest
+        id: relabel
         if: steps.inflight.outputs.skip != 'true' && steps.decide.outputs.do_promote == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.latest_version.outputs.version }}
         run: |
           set -euo pipefail
-          # Record "now" before dispatching so the polling step below can find the
-          # exact run this triggered, rather than accidentally picking up some other
-          # concurrent build.yml run by mistake.
-          BEFORE="$(date -u +%s)"
-          echo "before=${BEFORE}" >>"$GITHUB_OUTPUT"
-          gh workflow run build.yml --repo "${{ github.repository }}" \
-            --ref "${{ github.event.repository.default_branch || 'main' }}" \
-            -f stream=latest
-          echo "::notice title=Dispatched::build.yml -f stream=latest"
+          CTR="$(buildah from "${IMAGE_REGISTRY}/${IMAGE_NAME}@${{ steps.pull.outputs.digest }}")"
+          buildah config --label "org.opencontainers.image.version=${VERSION}" "${CTR}"
+          NEW_IMAGE_ID="$(buildah commit --format oci "${CTR}" \
+            "localhost/${IMAGE_NAME}:latest-promoting")"
+          buildah rm "${CTR}" >/dev/null
+          echo "image_id=${NEW_IMAGE_ID}" >>"$GITHUB_OUTPUT"
 
-      # workflow_dispatch gives no run ID back directly, so find the run it created by
-      # polling the list for a workflow_dispatch build.yml run newer than the moment
-      # this job dispatched it. A short settle delay first: the run does not always
-      # appear in the list instantly.
-      - name: Find the dispatched run
-        id: find_run
-        if: steps.dispatch.outcome == 'success'
+      - name: Tag for push
+        if: steps.inflight.outputs.skip != 'true' && steps.decide.outputs.do_promote == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          AFTER: ${{ steps.dispatch.outputs.before }}
+          VERSION: ${{ steps.latest_version.outputs.version }}
+          FEDORA_MAJOR: ${{ steps.latest_version.outputs.fedora_major }}
         run: |
           set -euo pipefail
-          sleep 15
-          for attempt in $(seq 1 10); do
-            RUN_ID="$(gh run list --repo "${{ github.repository }}" --workflow=build.yml \
-              --event=workflow_dispatch --limit 5 \
-              --json databaseId,createdAt,status \
-              --jq "[.[] | select((.createdAt | fromdateiso8601) >= ${AFTER})]
-                    | sort_by(.createdAt) | .[0].databaseId // empty")"
-            [[ -n "${RUN_ID}" ]] && break
-            echo "dispatched run not visible yet (attempt ${attempt}/10), retrying in 10s"
-            sleep 10
+          for t in "${TARGET_TAG}" "${VERSION}" "${FEDORA_MAJOR}"; do
+            podman tag "${{ steps.relabel.outputs.image_id }}" "localhost/${IMAGE_NAME}:${t}"
           done
-          if [[ -z "${RUN_ID}" ]]; then
-            echo "::error::could not find the dispatched build.yml run after retrying."
-            exit 1
-          fi
-          echo "run_id=${RUN_ID}" >>"$GITHUB_OUTPUT"
-          echo "::notice title=Found run::build.yml run ${RUN_ID}"
 
-      # A real build, ~20-30 minutes based on this pipeline's own build.yml history.
-      # gh run watch blocks until it finishes and exits non-zero if it failed, so a
-      # failed latest build fails this job loudly rather than silently leaving latest
-      # stale with no visible signal.
-      - name: Wait for the latest build to finish
-        id: wait
-        if: steps.find_run.outcome == 'success'
+      - name: Push relabeled image
+        id: push
+        if: steps.inflight.outputs.skip != 'true' && steps.decide.outputs.do_promote == 'true'
+        uses: redhat-actions/push-to-registry@94ade333c38ecc0e60e94785125d9a52ca423b37 # v3.0.0
+        with:
+          image: ${{ env.IMAGE_NAME }}
+          tags: >-
+            ${{ env.TARGET_TAG }} ${{ steps.latest_version.outputs.version }}
+            ${{ steps.latest_version.outputs.fedora_major }}
+          registry: ${{ env.IMAGE_REGISTRY }}
+
+      # Re-signing is unavoidable regardless of retag-vs-rebuild: the signature is over
+      # the digest, and rewriting even one label changes the digest. Same mechanics
+      # build.yml's own "Sign image" step uses.
+      - name: Install cosign
+        if: steps.inflight.outputs.skip != 'true' && steps.decide.outputs.do_promote == 'true'
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+
+      - name: Sign relabeled image
+        if: steps.inflight.outputs.skip != 'true' && steps.decide.outputs.do_promote == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+          DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           set -euo pipefail
-          gh run watch "${{ steps.find_run.outputs.run_id }}" \
-            --repo "${{ github.repository }}" --exit-status
-          # build.yml's own "version" job output isn't surfaced by `gh run view` in a
-          # convenient form, so read it back off :latest, which the build just
-          # published, instead.
-          PROMOTED_VERSION="$(skopeo inspect \
-              "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${TARGET_TAG}" \
-            | jq -r '.Labels["org.opencontainers.image.version"] // empty')"
-          [[ -n "${PROMOTED_VERSION}" ]] || {
-            echo "::error::latest build finished but :${TARGET_TAG} has no version label." >&2
+          cosign sign -y \
+            --new-bundle-format=false \
+            --use-signing-config=false \
+            --key env://COSIGN_PRIVATE_KEY \
+            "${IMAGE_REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+
+      # Re-attach the SAME manifest JSON testing's build already verified — the
+      # package set has not changed, only the label, so there is nothing new to
+      # regenerate here.
+      #
+      # Copied to a RELATIVE filename in the workdir before attaching, matching
+      # build.yml's own known-good "Attach package manifest" pattern exactly (it
+      # always attaches a plain packages.json from the working directory, never an
+      # absolute path). Confirmed live 2026-09-19: attaching fetch-manifest.sh's
+      # absolute mktemp path directly (with --disable-path-validation to get past
+      # oras attach's own guard) produced a referrer that changelog.py's oras PULL
+      # then refused with "path traversal disallowed" — something about how oras
+      # attach records an absolute source path in the artifact's own manifest, which
+      # a later `oras pull` of that same artifact treats as suspicious. Copying to a
+      # relative name first avoids the whole problem rather than chasing it further
+      # on the pull side too.
+      - name: Attach package manifest
+        id: attach
+        if: steps.inflight.outputs.skip != 'true' && steps.decide.outputs.do_promote == 'true'
+        run: |
+          set -euo pipefail
+          TESTING_MANIFEST="$(.github/scripts/fetch-manifest.sh \
+            "${IMAGE_REGISTRY}/${IMAGE_NAME}" "${SOURCE_TAG}")"
+          [[ -n "${TESTING_MANIFEST}" ]] || {
+            echo "::error::could not re-fetch :${SOURCE_TAG}'s manifest to" \
+              "re-attach to :${TARGET_TAG}." >&2
             exit 1
           }
-          echo "version=${PROMOTED_VERSION}" >>"$GITHUB_OUTPUT"
-          echo "::notice title=Promoted::latest is now ${PROMOTED_VERSION}"
+          cp "${TESTING_MANIFEST}" ./packages.json
+          oras attach \
+            --artifact-type "${ARTIFACT_TYPE}" \
+            --annotation filename=packages.json \
+            "${IMAGE_REGISTRY}/${IMAGE_NAME}@${{ steps.push.outputs.digest }}" \
+            packages.json:application/json
+          echo "::notice title=Promoted::latest is now ${{ steps.latest_version.outputs.version }}"
 
-      # No separate release for latest: it IS the release. build.yml's own release
-      # job already generates the full changelog (headline packages, package diff,
-      # commits) for this bare, unprefixed version the moment it publishes — nothing
-      # further to create or annotate here. Unlike the abandoned re-tag design, the
-      # latest build genuinely is separate content this time (its own build, at
-      # whatever point in time this workflow happened to run), so it deserves its own
-      # real release rather than an annotation bolted onto testing's.
-      - name: Report the promotion
-        if: steps.wait.outputs.version != ''
+      # Same provenance attestation build.yml's own build attaches to every real
+      # publish — ported here since this job now IS the publish for :latest, rather
+      # than assuming build.yml's does when it no longer runs for this stream.
+      - name: Attest provenance
+        if: steps.inflight.outputs.skip != 'true' && steps.decide.outputs.do_promote == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-name: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          # Same reasoning as build.yml's identical step: MUST stay false, or the
+          # keyless sigstore bundle this pushes into the registry's OCI referrers
+          # fallback index breaks `cosign verify --key` against the real signature.
+          push-to-registry: false
+
+      # No dispatched build.yml run any more to generate the release, so this job does
+      # it directly — same script (.github/changelog.py), same inputs, just called here
+      # instead of from build.yml's own release job. The checkout at the top of this
+      # job already has the fetch-depth: 500 this needs for the commit table.
+      - name: Generate release notes
+        id: notes
+        if: steps.inflight.outputs.skip != 'true' && steps.decide.outputs.do_promote == 'true'
+        env:
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          VERSION: ${{ steps.latest_version.outputs.version }}
         run: |
-          MSG="latest ${{ steps.wait.outputs.version }} is live, with its own"
-          MSG="${MSG} GitHub Release from build.yml's release job."
-          echo "::notice title=Done::${MSG}"
+          set -euo pipefail
+          python3 .github/changelog.py "${VERSION}" ./output.env ./changelog.md --workdir .
+          source ./output.env
+          echo "title=${TITLE}" >>"$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >>"$GITHUB_OUTPUT"
+
+      - name: Create release
+        if: steps.inflight.outputs.skip != 'true' && steps.decide.outputs.do_promote == 'true'
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        with:
+          name: ${{ steps.notes.outputs.title }}
+          tag_name: ${{ steps.notes.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          body_path: ./changelog.md
+          # A real latest-stream promotion always claims the "Latest release" badge —
+          # unconditionally true here, unlike build.yml's own conditional version of
+          # this same setting, because this job ONLY ever runs when do_promote is true.
+          make_latest: true
