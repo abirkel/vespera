@@ -87,3 +87,7 @@ Branch=stable
 
 [Flatpak Preinstall dev.vencord.Vesktop]
 Branch=stable
+
+# --- Networking / file transfer -----------------------------------------------
+[Flatpak Preinstall org.localsend.localsend_app]
+Branch=stable
