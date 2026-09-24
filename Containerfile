@@ -37,10 +37,10 @@ ARG BASE_TAG="latest@sha256:6eac80d50fb4dc1db666bd3fdd47ec9ff812952cf38888a8abc0
 # NOT PINNED BY RENOVATE. akmods republishes main-44 roughly daily, independently of
 # when kinoite-nvidia republishes its own `latest`. Pinning both by digest via two
 # separate Renovate rules meant the two pins agreed only by chance — see
-# .github/workflows/build.yml's "Resolve matching akmods digest" step, which reads
-# BOTH images' `ostree.linux` label at build time (every real build, not just
-# Containerfile-touching PRs) and resolves AKMODS_TAG to whichever akmods digest
-# actually matches the base pinned above right now, failing closed if none does.
+# .github/workflows/build.yml's "Resolve matching akmods digest" step. Every real
+# build derives the retained kernel-specific akmods tag from the base image's
+# `ostree.linux` label, verifies that candidate's label, then pins its digest. It
+# fails closed rather than falling back to a floating tag for another kernel.
 #
 # main-44 -> main-45 is still the one manual edit needed when the base crosses to a new
 # Fedora release — nothing here resolves that automatically, on purpose.
