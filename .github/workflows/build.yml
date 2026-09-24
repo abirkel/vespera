@@ -230,48 +230,69 @@ jobs:
           else
             BASE_REF="${BASE_IMAGE}:${BASE_TAG}"
           fi
-          # AKMODS_TAG is a bare floating tag (e.g. main-44) with no digest to strip.
-          AKMODS_FLOATING_REF="${AKMODS_IMAGE}:${AKMODS_TAG}"
+          # AKMODS_TAG is the floating flavor/Fedora prefix (e.g. main-44). Resolve
+          # the retained, kernel-specific tag from the pinned base instead of racing
+          # the current floating tag, then pin that candidate's immutable digest.
+          if [[ "${AKMODS_TAG}" == *@* ]]; then
+            echo "::error::AKMODS_TAG must be a bare flavor/Fedora tag, not a digest."
+            exit 1
+          fi
 
-          echo "Base ref          : ${BASE_REF}"
-          echo "Akmods floating ref: ${AKMODS_FLOATING_REF}"
+          echo "Base ref             : ${BASE_REF}"
+          echo "Akmods tag prefix    : ${AKMODS_TAG}"
 
           base_kver="$(
             skopeo inspect --config "docker://${BASE_REF}" \
               | python3 .github/scripts/read-ostree-linux-label.py
           )"
-          akmods_digest="$(
-            skopeo inspect "docker://${AKMODS_FLOATING_REF}" | jq -r '.Digest'
-          )"
-          akmods_kver="$(
-            skopeo inspect --config "docker://${AKMODS_FLOATING_REF}" \
-              | python3 .github/scripts/read-ostree-linux-label.py
-          )"
-
-          echo "base image kernel   : ${base_kver:-<ostree.linux label not found>}"
-          echo "akmods image kernel : ${akmods_kver:-<ostree.linux label not found>}"
-          echo "akmods resolved to  : ${akmods_digest}"
-
-          if [[ -z "${base_kver}" || -z "${akmods_kver}" ]]; then
-            echo "::error::Could not read ostree.linux from one or both images." \
-              "Cannot verify kernel/akmods compatibility; refusing to build."
+          if [[ -z "${base_kver}" || "${base_kver}" != *.* ]]; then
+            echo "::error::Could not read a VERSION-RELEASE.ARCH ostree.linux label" \
+              "from ${BASE_REF}; refusing to resolve akmods."
             exit 1
           fi
 
+          # uBlue names retained akmods tags as <flavor>-<fedora>-<kernel EVR>.
+          # Drop only the final architecture suffix from the base label.
+          kernel_evr="${base_kver%.*}"
+          candidate_tag="${AKMODS_TAG}-${kernel_evr}"
+          candidate_ref="${AKMODS_IMAGE}:${candidate_tag}"
+
+          echo "Base image kernel    : ${base_kver}"
+          echo "Akmods candidate ref : ${candidate_ref}"
+
+          if ! akmods_digest="$(
+            skopeo inspect "docker://${candidate_ref}" 2>/dev/null | jq -er '.Digest'
+          )"; then
+            echo "::error::No retained akmods image was found for base kernel" \
+              "${base_kver}: ${candidate_ref}."
+            echo "::error::Refusing to fall back to floating ${AKMODS_TAG}, which" \
+              "could contain modules for another kernel. Re-run after uBlue" \
+              "publishes this candidate, or update the base image."
+            exit 1
+          fi
+
+          if ! akmods_kver="$(
+            skopeo inspect --config "docker://${candidate_ref}" 2>/dev/null \
+              | python3 .github/scripts/read-ostree-linux-label.py
+          )"; then
+            echo "::error::Could not read ostree.linux from ${candidate_ref};" \
+              "refusing to verify kernel/akmods compatibility."
+            exit 1
+          fi
+
+          echo "Akmods candidate kernel: ${akmods_kver:-<ostree.linux label not found>}"
+          echo "Akmods resolved digest : ${akmods_digest}"
+
           if [[ "${base_kver}" != "${akmods_kver}" ]]; then
-            echo "::error::Kernel mismatch. Base image (${BASE_REF}) ships kernel" \
-              "${base_kver}, but the current ${AKMODS_FLOATING_REF}" \
-              "(${akmods_digest}) is built for kernel ${akmods_kver}." \
-              "akmods has not yet republished a build matching this base's kernel." \
-              "This build will not proceed; wait for akmods's next daily" \
-              "publish and re-run, or re-dispatch once it catches up."
+            echo "::error::Kernel mismatch. Base ${BASE_REF} ships ${base_kver}," \
+              "but ${candidate_ref} reports ${akmods_kver}."
             exit 1
           fi
 
           echo "Kernel versions match (${base_kver}). Pinning AKMODS_TAG to the" \
-            "resolved digest for this run."
+            "resolved candidate digest for this run."
 
-          RESOLVED_TAG="${AKMODS_TAG}@${akmods_digest}"
+          RESOLVED_TAG="${candidate_tag}@${akmods_digest}"
           sed -i "s|^ARG AKMODS_TAG=\"[^\"]*\"|ARG AKMODS_TAG=\"${RESOLVED_TAG}\"|" \
             Containerfile
           grep -oP '^ARG AKMODS_TAG="\K[^"]+' Containerfile
