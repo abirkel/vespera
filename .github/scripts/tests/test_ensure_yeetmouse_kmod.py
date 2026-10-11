@@ -47,7 +47,8 @@ class Clock:
         return self.t
 
     def sleep(self, s):
-        assert s >= 0
+        # Every wait must make progress: a zero sleep is a busy loop.
+        assert s > 0, f"zero/negative sleep {s} at t={self.t}"
         self.t += s
 
 
@@ -65,6 +66,8 @@ class World:
         self.next_id = 100
         self.on_dispatch = None
         self.repomd_fail_until = -1
+        self.repomd_fail_from = None
+        self.dispatch_body = None      # raw 200 body override
 
     def pkgs(self):
         cur = []
@@ -76,7 +79,8 @@ class World:
     def __call__(self, method, url, headers, body=None):
         if url.startswith(REPO + "repodata/repomd.xml"):
             assert headers.get("Cache-Control") == "no-cache"
-            if self.clock() < self.repomd_fail_until:
+            if self.clock() < self.repomd_fail_until or (
+                    self.repomd_fail_from is not None and self.clock() >= self.repomd_fail_from):
                 return m.Response(503, b"")
             data = primary(self.pkgs())
             self._primary = data
@@ -95,6 +99,8 @@ class World:
             self.dispatched.append((self.clock(), rid))
             if self.on_dispatch:
                 self.on_dispatch(rid)
+            if self.dispatch_body is not None:
+                return m.Response(200, self.dispatch_body)
             return m.Response(200, json.dumps({"workflow_run_id": rid}).encode())
         if "/runs?status=" in url:
             status = url.split("status=")[1].split("&")[0]
@@ -238,9 +244,49 @@ class Tests(unittest.TestCase):
         with self.assertRaisesRegex(m.Fatal, "HTTP 403"):
             run(w, self.clock, cfg())
 
+    def test_metadata_outage_during_expired_grace_keeps_normal_cadence(self):
+        w = World(self.clock, {0: NO_KMOD})
+        w.runs[100] = [(0, {"status": "in_progress"}), (300, done("success"))]
+        w.repomd_fail_from = 900   # grace (360+600=960) expires while COPR is down
+        sleeps = []
+        orig = self.clock.sleep
+
+        def rec(s):
+            sleeps.append(s)
+            orig(s)
+        with self.assertRaisesRegex(m.Fatal, "gave up"):
+            m.ensure(cfg(), http=w, clock=self.clock, sleep=rec, wall=self.clock)
+        self.assertTrue(all(s > 0 for s in sleeps))
+        self.assertEqual(self.clock.t, 3600)
+
+    def test_metadata_back_after_expired_grace_fails_with_reason(self):
+        w = World(self.clock, {0: NO_KMOD})
+        w.runs[100] = [(0, {"status": "in_progress"}), (300, done("success"))]
+        w.repomd_fail_from = 900   # COPR down from 900s, back at 1500s
+        orig = self.clock.sleep
+
+        def sleep(s):
+            orig(s)
+            if self.clock.t >= 1500:
+                w.repomd_fail_from = None
+        with self.assertRaisesRegex(m.Fatal, "Fedora's current kernel-devel"):
+            m.ensure(cfg(), http=w, clock=self.clock, sleep=sleep, wall=self.clock)
+        self.assertLess(self.clock.t, 1700)
+
+    def test_unusable_dispatch_bodies_are_fatal_once(self):
+        for body in (b"[]", b"{}", b'{"workflow_run_id": "12"}', b'{"workflow_run_id": 0}',
+                     b'{"workflow_run_id": true}', b"", b"not json"):
+            with self.subTest(body=body):
+                self.clock.t = 0
+                w = World(self.clock, {0: NO_KMOD})
+                w.dispatch_body = body
+                with self.assertRaisesRegex(m.Fatal, "no usable workflow_run_id"):
+                    run(w, self.clock, cfg())
+                self.assertEqual(len(w.dispatched), 1)
+
     def test_204_without_run_id_is_fatal_and_not_repeated(self):
         w = World(self.clock, {0: NO_KMOD}, dispatch_status=204)
-        with self.assertRaisesRegex(m.Fatal, "no workflow_run_id"):
+        with self.assertRaisesRegex(m.Fatal, "no usable workflow_run_id"):
             run(w, self.clock, cfg())
         self.assertEqual(len(w.dispatched), 1)
 

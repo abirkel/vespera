@@ -320,12 +320,13 @@ class GitHub:
         # Any 2xx means a run was started, so from here on never raise IOError.
         try:
             run_id = json.loads(r.body).get("workflow_run_id")
-        except ValueError:
+        except (ValueError, AttributeError):
             run_id = None
-        if not run_id:
-            raise Fatal("dispatch was accepted but GitHub returned no workflow_run_id, "
-                        "so the run cannot be followed. Not dispatching again.")
-        return int(run_id)
+        if type(run_id) is not int or run_id <= 0:
+            raise Fatal("dispatch was accepted but GitHub returned no usable "
+                        "workflow_run_id, so the run cannot be followed. Not dispatching "
+                        "again.")
+        return run_id
 
     def run(self, run_id: int) -> dict:
         return self._get(f"/actions/runs/{run_id}")
@@ -464,7 +465,7 @@ def ensure(cfg: Config, http=urllib_http, clock=time.monotonic, sleep=time.sleep
 
         now = clock()
         wake = min(now + cfg.poll_secs, deadline)
-        if grace_until is not None:
+        if grace_until is not None and now < grace_until:
             wake = min(wake, grace_until)
         sleep(max(0.0, wake - now))
 
