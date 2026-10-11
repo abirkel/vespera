@@ -84,10 +84,12 @@ class World:
         if url == REPO + "repodata/x-primary.xml.gz":
             return m.Response(200, self._primary)
         if method == "POST" and url.endswith("/dispatches"):
-            assert json.loads(body) == {"ref": "main", "return_run_details": True}
+            assert json.loads(body) == {"ref": "main"}
+            assert headers["X-GitHub-Api-Version"] == "2026-03-10"
             assert headers["Authorization"] == "Bearer tok"
             if self.dispatch_status != 200:
-                return m.Response(self.dispatch_status, b"{}")
+                self.dispatched.append((self.clock(), None))
+                return m.Response(self.dispatch_status, b"")
             rid = self.next_id
             self.next_id += 1
             self.dispatched.append((self.clock(), rid))
@@ -235,6 +237,67 @@ class Tests(unittest.TestCase):
         w = World(self.clock, {0: NO_KMOD}, dispatch_status=403)
         with self.assertRaisesRegex(m.Fatal, "HTTP 403"):
             run(w, self.clock, cfg())
+
+    def test_204_without_run_id_is_fatal_and_not_repeated(self):
+        w = World(self.clock, {0: NO_KMOD}, dispatch_status=204)
+        with self.assertRaisesRegex(m.Fatal, "no workflow_run_id"):
+            run(w, self.clock, cfg())
+        self.assertEqual(len(w.dispatched), 1)
+
+    def test_5xx_dispatches_count_against_the_cap(self):
+        w = World(self.clock, {0: NO_KMOD}, dispatch_status=502)
+        with self.assertRaisesRegex(m.Fatal, "already dispatched 3"):
+            run(w, self.clock, cfg())
+        self.assertEqual(len(w.dispatched), 3)
+
+    def test_invalid_timing_env_is_rejected(self):
+        for name, value in (("POLL_SECS", "0"), ("POLL_SECS", "-1"),
+                            ("DEADLINE_SECS", "nan"), ("RETRY_DELAY_SECS", "0"),
+                            ("GRACE_SECS", "-1"), ("MAX_DISPATCHES", "0"),
+                            ("DEADLINE_SECS", "inf"), ("POLL_SECS", "soon")):
+            with self.subTest(name=name, value=value):
+                with self.assertRaises(m.Fatal):
+                    m.config_from_env(KVER, {name: value})
+        self.assertEqual(m.config_from_env(KVER, {"GRACE_SECS": "0"}).grace_secs, 0)
+
+    def _repo_http(self, repomd_body, primary_body):
+        def http(method, url, headers, body=None):
+            if "repomd.xml" in url:
+                return m.Response(200, repomd_body)
+            return m.Response(200, primary_body)
+        return http
+
+    def test_missing_checksum_is_unusable(self):
+        data = primary(FULL)
+        body = (b'<repomd xmlns="http://linux.duke.edu/metadata/repo"><data type="primary">'
+                b'<location href="repodata/p.xml.gz"/></data></repomd>')
+        with self.assertRaisesRegex(IOError, "no sha256"):
+            m.read_repo(cfg(), self._repo_http(body, data), 0)
+
+    def test_non_sha256_checksum_is_unusable(self):
+        data = primary(FULL)
+        body = repomd(data, "repodata/p.xml.gz").replace(b'type="sha256"', b'type="md5"')
+        with self.assertRaisesRegex(IOError, "no sha256"):
+            m.read_repo(cfg(), self._repo_http(body, data), 0)
+
+    def test_malformed_repomd_is_unusable(self):
+        with self.assertRaisesRegex(IOError, "unusable COPR metadata"):
+            m.read_repo(cfg(), self._repo_http(b"<repomd", b""), 0)
+
+    def test_corrupt_primary_is_unusable(self):
+        data = b"not gzip at all"
+        with self.assertRaises(IOError):
+            m.read_repo(cfg(), self._repo_http(repomd(data, "repodata/p.xml.gz"), data), 0)
+
+    def test_corrupt_xz_primary_is_unusable(self):
+        data = b"not xz at all"
+        with self.assertRaisesRegex(IOError, "unusable COPR metadata"):
+            m.read_repo(cfg(), self._repo_http(repomd(data, "repodata/p.xml.xz"), data), 0)
+
+    def test_malformed_primary_xml_is_unusable(self):
+        data = gzip.compress(b"<metadata><package>")
+        with self.assertRaisesRegex(IOError, "unusable COPR metadata"):
+            m.read_repo(cfg(), self._repo_http(repomd(data, "repodata/p.xml.gz"), data), 0)
 
     def test_deadline(self):
         w = World(self.clock, {0: NO_KMOD})

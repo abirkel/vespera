@@ -42,6 +42,7 @@ import hashlib
 import json
 import lzma
 import bz2
+import math
 import os
 import re
 import shutil
@@ -99,9 +100,17 @@ def config_from_env(kver: str, env=os.environ) -> Config:
     if not m:
         raise Fatal(f"KVER {kver!r} is not VERSION-RELEASE.fcNN.ARCH")
 
-    def num(name, default):
+    def num(name, default, minimum, inclusive):
         raw = env.get(name)
-        return float(raw) if raw else default
+        try:
+            value = float(raw) if raw else default
+        except ValueError:
+            raise Fatal(f"{name}={raw!r} is not a number")
+        ok = math.isfinite(value) and (value >= minimum if inclusive else value > minimum)
+        if not ok:
+            raise Fatal(f"{name}={raw!r} must be a finite number "
+                        f"{'>=' if inclusive else '>'} {minimum}")
+        return value
 
     return Config(
         kver=kver,
@@ -113,11 +122,12 @@ def config_from_env(kver: str, env=os.environ) -> Config:
         workflow=env.get("YEETMOUSE_WORKFLOW", Config.workflow),
         ref=env.get("YEETMOUSE_REF", Config.ref),
         token=env.get("YEETMOUSE_DISPATCH_TOKEN", ""),
-        deadline_secs=num("DEADLINE_SECS", Config.deadline_secs),
-        poll_secs=num("POLL_SECS", Config.poll_secs),
-        grace_secs=num("GRACE_SECS", Config.grace_secs),
-        retry_delay_secs=num("RETRY_DELAY_SECS", Config.retry_delay_secs),
-        max_dispatches=int(num("MAX_DISPATCHES", Config.max_dispatches)),
+        # Zero or negative intervals would busy-loop, NaN would never reach the deadline.
+        deadline_secs=num("DEADLINE_SECS", Config.deadline_secs, 0, False),
+        poll_secs=num("POLL_SECS", Config.poll_secs, 0, False),
+        grace_secs=num("GRACE_SECS", Config.grace_secs, 0, True),
+        retry_delay_secs=num("RETRY_DELAY_SECS", Config.retry_delay_secs, 0, False),
+        max_dispatches=int(num("MAX_DISPATCHES", Config.max_dispatches, 1, True)),
     )
 
 
@@ -175,12 +185,29 @@ class RepoState:
 
 
 def read_repo(cfg: Config, http, now: float) -> RepoState:
-    """Fetch repomd.xml, then the primary metadata it names, and verify its checksum.
+    """Fetch repomd.xml, then the primary metadata it names, and verify its SHA-256.
 
     repomd.xml is fetched with no-cache headers and a throwaway query string so a CDN
     cannot hand back a copy from before COPR published. The primary file name is a
     content hash, so it cannot be stale once repomd is current.
+
+    Every way the metadata can be unusable (HTTP error, missing or wrong checksum,
+    malformed XML, a failed decompression) raises IOError, which the caller treats
+    as "not readable this tick, try again".
     """
+    try:
+        return _read_repo(cfg, http, now)
+    except Fatal:
+        raise
+    except OSError:
+        raise
+    except Exception as e:
+        # Bad XML, corrupt gzip/xz/bz2/zstd data, or a missing element or attribute.
+        # gzip's BadGzipFile is already an OSError and passes through above.
+        raise IOError(f"unusable COPR metadata: {type(e).__name__}: {e}") from e
+
+
+def _read_repo(cfg: Config, http, now: float) -> RepoState:
     headers = {"Cache-Control": "no-cache", "Pragma": "no-cache"}
     r = http("GET", f"{cfg.repo_url}repodata/repomd.xml?cb={int(now)}", headers)
     if r.status != 200:
@@ -194,13 +221,13 @@ def read_repo(cfg: Config, http, now: float) -> RepoState:
         raise IOError("repomd.xml has no primary data entry")
     href = primary.find(f"{REPO_NS}location").get("href")
     checksum = primary.find(f"{REPO_NS}checksum")
+    if checksum is None or checksum.get("type") != "sha256" or not (checksum.text or "").strip():
+        raise IOError("repomd.xml primary entry has no sha256 checksum")
     r = http("GET", cfg.repo_url + href, headers)
     if r.status != 200:
         raise IOError(f"{href}: HTTP {r.status}")
-    if checksum is not None and checksum.get("type") in hashlib.algorithms_available:
-        got = hashlib.new(checksum.get("type"), r.body).hexdigest()
-        if got != checksum.text.strip():
-            raise IOError(f"{href}: checksum mismatch (CDN mid-update?)")
+    if hashlib.sha256(r.body).hexdigest() != checksum.text.strip():
+        raise IOError(f"{href}: checksum mismatch (CDN mid-update?)")
     xml = decompress(href, r.body)
 
     state = RepoState(revision=revision)
@@ -266,8 +293,12 @@ class GitHub:
         return None
 
     def dispatch(self) -> int:
-        body = json.dumps({"ref": self.cfg.ref, "return_run_details": True}).encode()
-        h = dict(self._headers(), **{"Content-Type": "application/json"})
+        # API version 2026-03-10 always answers a dispatch with 200 and the new run's
+        # id. The older 2022-11-28 version can answer 204 with no id, which would
+        # leave a real run started but untracked.
+        body = json.dumps({"ref": self.cfg.ref}).encode()
+        h = dict(self._headers(), **{"Content-Type": "application/json",
+                                     "X-GitHub-Api-Version": "2026-03-10"})
         r = self.http(
             "POST",
             f"{self.cfg.gh_api}/repos/{self.cfg.gh_repo}/actions/workflows/"
@@ -282,11 +313,18 @@ class GitHub:
                 f"(HTTP {r.status}). Check that YEETMOUSE_DISPATCH_TOKEN is valid and has "
                 "Actions: read and write on that repository."
             )
-        if r.status != 200:
+        if not 200 <= r.status < 300:
+            # A 5xx may or may not have started a run. The caller counts this attempt
+            # against MAX_DISPATCHES either way, and adopts the run if one appears.
             raise IOError(f"dispatch: HTTP {r.status}")
-        run_id = json.loads(r.body).get("workflow_run_id")
+        # Any 2xx means a run was started, so from here on never raise IOError.
+        try:
+            run_id = json.loads(r.body).get("workflow_run_id")
+        except ValueError:
+            run_id = None
         if not run_id:
-            raise Fatal("dispatch succeeded but GitHub returned no workflow_run_id")
+            raise Fatal("dispatch was accepted but GitHub returned no workflow_run_id, "
+                        "so the run cannot be followed. Not dispatching again.")
         return int(run_id)
 
     def run(self, run_id: int) -> dict:
@@ -383,9 +421,9 @@ def ensure(cfg: Config, http=urllib_http, clock=time.monotonic, sleep=time.sleep
                         f"{', '.join(last_missing)}"
                     )
                 else:
+                    dispatches += 1  # counted before the call: a 5xx may still start a run
                     tracked = gh.dispatch()
                     tracked_ours = True
-                    dispatches += 1
                     tracked_url = (f"https://github.com/{cfg.gh_repo}/actions/runs/"
                                    f"{tracked}")
                     log(f"[{elapsed()}] dispatched {cfg.workflow}: {tracked_url}")
