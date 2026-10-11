@@ -25,7 +25,7 @@ default:
 # ---------------------------------------------------------------------------
 
 # Run every static check (syntax, shell, yaml, json, structure)
-check: check-just check-sh check-yaml check-json check-layout
+check: check-just check-sh check-yaml check-json check-py check-layout
     @echo "all checks passed"
 
 # Validate this justfile and the in-image ujust recipes parse.
@@ -85,6 +85,10 @@ check-yaml:
         echo "WARNING: no YAML linter found. CI uses yamllint and checks line length," >&2
         echo "         which the fallbacks above do NOT. Install yamllint to match CI." >&2
     fi
+
+# Unit-test the workflow helper scripts
+check-py:
+    python3 -m unittest discover -s .github/scripts/tests
 
 # Validate the renovate config and the bootc-image-builder TOMLs
 check-json:

@@ -88,42 +88,50 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
-# yeetmouse — raw mouse-input accel driver, from the abirkel-stable repo.
+# yeetmouse — raw mouse-input accel driver, from the COPR project abirkel/yeetmouse
+# (built by github.com/abirkel/yeetmouse-rpm).
 #
 # FATAL if it cannot be installed. The kmod package name embeds the exact kernel version
-# and Provides `kernel-modules-for-kernel = <exact kver>`, so it only resolves when
-# abirkel-stable has a build for the kernel this base ships. Shipping an image where the
-# mouse driver is silently absent is not acceptable, so the build stops instead.
+# and Provides `kernel-modules-for-kernel = <exact kver>`, so it only resolves when COPR
+# has a build for the kernel this base ships. Shipping an image where the mouse driver is
+# silently absent is not acceptable, so the build stops instead.
 #
-# CONSEQUENCE, and the reason the schedule in build.yml is 07:00 rather than 05:20:
-# abirkel/yeetmouse-rpm builds kmods for the current ublue kernel at 06:00 UTC. Any run
-# that starts before that on a day the kernel moved will find no matching kmod and now
-# fails. Re-dispatch after yeetmouse-rpm has published, or set ENABLE_YEETMOUSE=0 for a
-# local build that deliberately does without it.
+# build.yml runs .github/scripts/ensure_yeetmouse_kmod.py before this build. When COPR
+# lacks the kmod for the base kernel it triggers yeetmouse-rpm's poll-kernel-bump
+# workflow and waits for the package, so reaching this failure in CI means that preflight
+# already gave up or was skipped. Locally, run that workflow by hand, or set
+# ENABLE_YEETMOUSE=0 for a build that deliberately does without it.
+#
+# The module is not signed for Secure Boot. The old abirkel-stable builds were not
+# either, so this is unchanged from before the COPR move.
 # ---------------------------------------------------------------------------
 if [[ "${ENABLE_YEETMOUSE:-1}" != "1" ]]; then
     info "yeetmouse: disabled by ENABLE_YEETMOUSE=0"
 else
-    log "yeetmouse (abirkel-stable)"
-    dnf5 -y config-manager addrepo --overwrite \
-        --from-repofile=https://abirkel.github.io/rpm-repo/abirkel-stable.repo
+    yeetmouse_repo='copr:copr.fedorainfracloud.org:abirkel:yeetmouse'
+    copr_repo="https://copr.fedorainfracloud.org/coprs/abirkel/yeetmouse/repo"
+    copr_repo+="/fedora-$(fedora_version)/abirkel-yeetmouse-fedora-$(fedora_version).repo"
+    log "yeetmouse (COPR abirkel/yeetmouse)"
+    dnf5 -y config-manager addrepo --overwrite --from-repofile="${copr_repo}"
 
-    if dnf5 -y install --enable-repo='abirkel-stable' \
+    # --enable-repo adds this repo to the ones already enabled, so Fedora still
+    # provides the dependencies (glibc, systemd, ...).
+    if dnf5 -y install --enable-repo="${yeetmouse_repo}" \
             "kmod-yeetmouse-${KVER}" yeetmouse; then
         info "yeetmouse installed for ${KVER}"
     else
         # Print the diagnostic BEFORE dying, so the log says which kernels are available
         # rather than just that this one is not.
         printf '\n' >&2
-        printf 'kmod-yeetmouse builds present in abirkel-stable:\n' >&2
-        dnf5 repoquery --disablerepo='*' --enablerepo='abirkel-stable' \
+        printf 'kmod-yeetmouse builds present in COPR abirkel/yeetmouse:\n' >&2
+        dnf5 repoquery --disablerepo='*' --enablerepo="${yeetmouse_repo}" \
             --qf '    %{name}\n' 'kmod-yeetmouse*' 2>/dev/null \
             | grep -v '\.src' | sort -u >&2 || true
         printf '\n' >&2
-        die "no kmod-yeetmouse build for ${KVER} in abirkel-stable.
-  Build one there (its check-release workflow runs 06:00 UTC daily, or dispatch it
-  manually), then re-run this build. ENABLE_YEETMOUSE=0 skips yeetmouse entirely."
+        die "no installable kmod-yeetmouse build for ${KVER} in COPR abirkel/yeetmouse.
+  Run poll-kernel-bump.yml in abirkel/yeetmouse-rpm, then re-run this build.
+  ENABLE_YEETMOUSE=0 skips yeetmouse entirely."
     fi
 
-    dnf5 -y config-manager setopt 'abirkel-stable'.enabled=0
+    dnf5 -y config-manager setopt "${yeetmouse_repo}".enabled=0
 fi

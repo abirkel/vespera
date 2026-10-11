@@ -17,23 +17,12 @@ on:
     # OFF THE EXACT HOUR ON PURPOSE, same reasoning as before: GitHub's own docs cite
     # the top of every hour as a documented high-load window for the schedule trigger.
     #
-    # NOT EARLIER than yeetmouse-rpm's own check-release cron (05:00 UTC / 14:00 JST,
-    # as of 2026-09-20): 30-kmods.sh treats a missing kmod-yeetmouse as fatal, and the
-    # kmod for a newly bumped kernel only exists once that workflow has built it — a
-    # few tens of seconds once it actually fires, plus the downstream sign-and-publish
-    # in abirkel/rpm-repo and the Pages deploy. This ~1-hour gap is comfortable against
-    # that real (short) runtime.
-    #
-    # IMPORTANT CAVEAT, verified 2026-09-20, not solved by this reschedule: GitHub's
-    # own scheduler drift is real and currently severe for yeetmouse-rpm specifically —
-    # its 06:17 UTC cron has been firing 09:14-12:43 UTC over the preceding 9 days
-    # (3-6.5 hours late), despite already being off the top of the hour. Evidence
-    # suggests this repo's drift is not primarily a peak-hour effect (GitHub's own docs
-    # cite low-activity-repo scheduling deprioritization as a distinct, separate cause
-    # from hour-of-day congestion) — so retiming this chain fixes RELATIVE ordering and
-    # margin between these three schedules, but does NOT guarantee any of them fires
-    # anywhere near its nominal time on a given day. A kernel-bump day can still miss
-    # the evening-JST target if yeetmouse-rpm itself drifts as it has recently.
+    # yeetmouse: the "Ensure the yeetmouse kmod is in COPR" step below triggers
+    # yeetmouse-rpm's kernel poller when COPR lacks the kmod for the base kernel and
+    # waits for it, so this schedule no longer has to trail any yeetmouse-rpm cron.
+    # GitHub's scheduler drift (3-6.5 hours late observed in September 2026) still
+    # means this run can start well after 06:03, so the evening-JST target is not
+    # guaranteed.
     - cron: '3 6 * * *'
   workflow_dispatch:
     inputs:
@@ -298,6 +287,21 @@ jobs:
           grep -oP '^ARG AKMODS_TAG="\K[^"]+' Containerfile
 
           echo "resolved_tag=${RESOLVED_TAG}" >>"$GITHUB_OUTPUT"
+          echo "base_kver=${base_kver}" >>"$GITHUB_OUTPUT"
+
+      # build_files/30-kmods.sh installs kmod-yeetmouse for the exact base kernel from
+      # COPR abirkel/yeetmouse and fails the build if it is missing. A new kernel often
+      # reaches the base before yeetmouse-rpm's 12-hourly poller has built for it, so
+      # check first and, if it is missing, dispatch that poller and wait for the package
+      # (up to 60 minutes) instead of failing 20 minutes into the build. The script's
+      # docstring has the full decision logic. YEETMOUSE_DISPATCH_TOKEN is a
+      # fine-grained token for abirkel/yeetmouse-rpm only, with Actions: read and write.
+      - name: Ensure the yeetmouse kmod is in COPR
+        timeout-minutes: 70
+        env:
+          KVER: ${{ steps.akmods.outputs.base_kver }}
+          YEETMOUSE_DISPATCH_TOKEN: ${{ secrets.YEETMOUSE_DISPATCH_TOKEN }}
+        run: python3 .github/scripts/ensure_yeetmouse_kmod.py "${KVER}"
 
       - name: Compute tags
         id: tags
