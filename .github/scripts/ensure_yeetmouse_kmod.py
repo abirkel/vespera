@@ -421,6 +421,10 @@ def ensure(cfg: Config, http=urllib_http, clock=time.monotonic, sleep=time.sleep
                         f"already dispatched {dispatches} time(s) and COPR still lacks "
                         f"{', '.join(last_missing)}"
                     )
+                elif clock() >= deadline:
+                    # active_run() can be slow. Never start a build this run would
+                    # abandon at once: the loop top does the final check and fails.
+                    continue
                 else:
                     dispatches += 1  # counted before the call: a 5xx may still start a run
                     tracked = gh.dispatch()
@@ -467,7 +471,11 @@ def ensure(cfg: Config, http=urllib_http, clock=time.monotonic, sleep=time.sleep
         wake = min(now + cfg.poll_secs, deadline)
         if grace_until is not None and now < grace_until:
             wake = min(wake, grace_until)
-        sleep(max(0.0, wake - now))
+        if wake <= now:
+            # A slow API call ran past the deadline: go straight to the final check
+            # at the loop top instead of sleeping zero.
+            continue
+        sleep(wake - now)
 
 
 def main(argv) -> int:

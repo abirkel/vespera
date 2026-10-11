@@ -68,6 +68,7 @@ class World:
         self.repomd_fail_until = -1
         self.repomd_fail_from = None
         self.dispatch_body = None      # raw 200 body override
+        self.active_delay = 0          # seconds each active-run lookup takes
 
     def pkgs(self):
         cur = []
@@ -103,6 +104,7 @@ class World:
                 return m.Response(200, self.dispatch_body)
             return m.Response(200, json.dumps({"workflow_run_id": rid}).encode())
         if "/runs?status=" in url:
+            self.clock.t += self.active_delay
             status = url.split("status=")[1].split("&")[0]
             return m.Response(200, json.dumps(
                 {"workflow_runs": self.active.get(status, [])}).encode())
@@ -243,6 +245,27 @@ class Tests(unittest.TestCase):
         w = World(self.clock, {0: NO_KMOD}, dispatch_status=403)
         with self.assertRaisesRegex(m.Fatal, "HTTP 403"):
             run(w, self.clock, cfg())
+
+    def test_slow_lookup_past_deadline_never_dispatches_late(self):
+        # Each active-run lookup checks 5 statuses; 800s each = 4000s, past the deadline.
+        w = World(self.clock, {0: NO_KMOD})
+        w.active_delay = 800
+        with self.assertRaisesRegex(m.Fatal, "gave up"):
+            run(w, self.clock, cfg())
+        self.assertEqual(w.dispatched, [])
+
+    def test_slow_run_poll_past_deadline_does_not_sleep_zero(self):
+        w = World(self.clock, {0: NO_KMOD})
+        orig = w.__call__
+
+        def slow(method, url, headers, body=None):
+            if "/actions/runs/100" in url:
+                self.clock.t = 3700
+            return orig(method, url, headers, body)
+        w.runs[100] = [(0, {"status": "in_progress"})]
+        with self.assertRaisesRegex(m.Fatal, "gave up"):
+            m.ensure(cfg(), http=slow, clock=self.clock, sleep=self.clock.sleep,
+                     wall=self.clock)
 
     def test_metadata_outage_during_expired_grace_keeps_normal_cadence(self):
         w = World(self.clock, {0: NO_KMOD})
