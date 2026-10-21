@@ -3,6 +3,8 @@ import gzip
 import hashlib
 import json
 import os
+import re
+import shlex
 import sys
 import unittest
 
@@ -417,7 +419,38 @@ class Tests(unittest.TestCase):
     def test_gui_at_older_version_counts_as_missing(self):
         newer = ("0", "0^20261101gitabcdef0", "1.fc44")
         self.assertEqual(self.missing(FULL + [pkg("yeetmouse", "x86_64", newer)]),
-                         ["yeetmouse-gui at 0:0^20261101gitabcdef0"])
+                         ["yeetmouse-gui at 0:0^20261101gitabcdef0 "
+                          f"(newest is 0:{EVR[1]})"])
+
+    def test_old_cli_version_without_gui_does_not_block(self):
+        # dnf never installs an older retained build, and the poller cannot backfill
+        # one, so only the newest candidates count.
+        older = ("0", "0^20260101git1111111", "1.fc44")
+        self.assertEqual(self.missing(FULL + [pkg("yeetmouse", "x86_64", older)]), [])
+
+    def test_gui_newer_than_cli_names_the_cli(self):
+        newer = ("0", "0^20261101gitabcdef0", "1.fc44")
+        self.assertEqual(self.missing(FULL + [pkg("yeetmouse-gui", "x86_64", newer)]),
+                         ["yeetmouse at 0:0^20261101gitabcdef0 "
+                          f"(newest is 0:{EVR[1]})"])
+
+    def test_own_success_with_kmod_common_missing_keeps_kernel_message(self):
+        w = World(self.clock, {0: [FULL[0], FULL[2], FULL[3]]})
+        w.runs[100] = [(0, done("success"))]
+        with self.assertRaisesRegex(m.Fatal, "builds only against"):
+            run(w, self.clock, cfg())
+
+    def test_rpmvercmp(self):
+        cases = [("1.0", "1.0", 0), ("1.0", "1.1", -1), ("1.01", "1.1", 0),
+                 ("1.0~rc1", "1.0", -1), ("1.0^1", "1.0", 1), ("1.0^1", "1.0.1", -1),
+                 ("10", "9", 1), ("1a", "1", 1), ("a", "1", -1),
+                 ("0^20260803git78dcd0d", "0^20261101gitabcdef0", -1)]
+        for a, b, want in cases:
+            with self.subTest(a=a, b=b):
+                self.assertEqual(m.rpmvercmp(a, b), want)
+                self.assertEqual(m.rpmvercmp(b, a), -want)
+        self.assertEqual(m.evr_cmp("0:1-2.fc44", "0:1-10.fc44"), -1)
+        self.assertEqual(m.evr_cmp("1:0-1", "0:9-9"), 1)
 
     def test_gui_at_other_release_same_version_is_fine(self):
         # Release is a per-package packaging counter; only Version must match.
@@ -446,11 +479,13 @@ class Tests(unittest.TestCase):
                             "build_files", "30-kmods.sh")
         with open(path, encoding="utf-8") as f:
             src = f.read()
-        start = src.index('dnf5 -y install --enable-repo="${yeetmouse_repo}"')
-        line = src[start:src.index("; then", start)]
-        words = line.replace("\\\n", " ").split()
-        for name in ('"kmod-yeetmouse-${KVER}"', m.USERSPACE, m.GUI):
-            self.assertIn(name, words)
+        decl = re.findall(r"^[ \t]*yeetmouse_pkgs=\(([^)#]*)\)[ \t]*$", src, re.M)
+        self.assertEqual(len(decl), 1, "expected one one-line yeetmouse_pkgs=(...)")
+        self.assertEqual(shlex.split(decl[0]),
+                         ["kmod-yeetmouse-${KVER}", m.USERSPACE, m.GUI])
+        install = re.findall(r"^[ \t]*if dnf5 -y install .*$", src, re.M)
+        self.assertEqual(install, ['    if dnf5 -y install --enable-repo="${yeetmouse_repo}" '
+                                   '"${yeetmouse_pkgs[@]}"; then'])
 
     def test_bad_kver(self):
         with self.assertRaises(m.Fatal):

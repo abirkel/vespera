@@ -118,10 +118,10 @@ else
     # provides the dependencies (glibc, systemd, ...).
     # yeetmouse-gui has been its own package since yeetmouse-rpm 332474a; before that
     # the yeetmouse package shipped /usr/bin/yeetmouse-gui. Keep this list in step with
-    # the packages .github/scripts/ensure_yeetmouse_kmod.py checks (a unit test
-    # enforces it).
-    if dnf5 -y install --enable-repo="${yeetmouse_repo}" \
-            "kmod-yeetmouse-${KVER}" yeetmouse yeetmouse-gui; then
+    # the packages .github/scripts/ensure_yeetmouse_kmod.py checks (a unit test reads
+    # this exact line, so keep it on one line).
+    yeetmouse_pkgs=("kmod-yeetmouse-${KVER}" yeetmouse yeetmouse-gui)
+    if dnf5 -y install --enable-repo="${yeetmouse_repo}" "${yeetmouse_pkgs[@]}"; then
         info "yeetmouse installed for ${KVER}"
     else
         # Print the diagnostic BEFORE dying, so the log says which builds are available
@@ -138,9 +138,12 @@ else
     fi
 
     # The GUI's Requires: yeetmouse is unversioned, so check the pair came from the
-    # same upstream pin, and that the binary is still where users run it from.
-    ym_ver="$(rpm -q --qf '%{EPOCHNUM}:%{VERSION}' yeetmouse)"
-    gui_ver="$(rpm -q --qf '%{EPOCHNUM}:%{VERSION}' yeetmouse-gui)"
+    # same upstream pin, and that the binary is still where users run it from. The
+    # queries are guarded so a failure reaches die instead of tripping set -e.
+    ym_ver="$(rpm -q --qf '%{EPOCHNUM}:%{VERSION}' yeetmouse)" \
+        || die "rpm cannot query the just-installed yeetmouse package"
+    gui_ver="$(rpm -q --qf '%{EPOCHNUM}:%{VERSION}' yeetmouse-gui)" \
+        || die "rpm cannot query the just-installed yeetmouse-gui package"
     [[ "${ym_ver}" == "${gui_ver}" ]] \
         || die "yeetmouse ${ym_ver} and yeetmouse-gui ${gui_ver} are from different pins"
     [[ -x /usr/bin/yeetmouse-gui ]] \
