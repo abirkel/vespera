@@ -272,8 +272,15 @@ def missing_packages(cfg: Config, state: RepoState) -> list:
         user_v = _version(_newest(user_evrs))
         gui_v = _version(_newest(gui_evrs))
         if user_v != gui_v:
-            lower = (GUI, gui_v, user_v) if rpmvercmp(gui_v, user_v) < 0 \
-                else (USERSPACE, user_v, gui_v)
+            order = rpmvercmp(gui_v, user_v)
+            if order == 0:
+                # Same Version to rpm but spelled differently (2.0 vs 2_0). Both specs
+                # take Version from one upstream pin, so this is a packaging bug a
+                # rebuild cannot fix. Fail rather than dispatch.
+                raise Fatal(f"newest {USERSPACE} Version {user_v} and newest {GUI} "
+                            f"Version {gui_v} are spelled differently; fix the specs "
+                            "in abirkel/yeetmouse-rpm")
+            lower = (GUI, gui_v, user_v) if order < 0 else (USERSPACE, user_v, gui_v)
             missing.append(f"{lower[0]} at {lower[2]} (newest is {lower[1]})")
     return missing
 

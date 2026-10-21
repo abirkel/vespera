@@ -440,10 +440,19 @@ class Tests(unittest.TestCase):
         with self.assertRaisesRegex(m.Fatal, "builds only against"):
             run(w, self.clock, cfg())
 
+    def test_rpm_equal_but_differently_spelled_versions_fail_without_dispatch(self):
+        w = World(self.clock, {0: FULL[:3] + [pkg("yeetmouse-gui", "x86_64",
+                                                  ("0", EVR[1].replace("git", "_git"),
+                                                   "1.fc44"))]})
+        self.assertEqual(m.rpmvercmp(EVR[1], EVR[1].replace("git", "_git")), 0)
+        with self.assertRaisesRegex(m.Fatal, "spelled differently"):
+            run(w, self.clock, cfg())
+        self.assertEqual(w.dispatched, [])
+
     def test_rpmvercmp(self):
         cases = [("1.0", "1.0", 0), ("1.0", "1.1", -1), ("1.01", "1.1", 0),
                  ("1.0~rc1", "1.0", -1), ("1.0^1", "1.0", 1), ("1.0^1", "1.0.1", -1),
-                 ("10", "9", 1), ("1a", "1", 1), ("a", "1", -1),
+                 ("10", "9", 1), ("1a", "1", 1), ("a", "1", -1), ("2.0", "2_0", 0),
                  ("0^20260803git78dcd0d", "0^20261101gitabcdef0", -1)]
         for a, b, want in cases:
             with self.subTest(a=a, b=b):
