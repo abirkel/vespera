@@ -3,13 +3,15 @@
 
 Usage: ensure_yeetmouse_kmod.py KVER     (e.g. 7.2.9-200.fc44.x86_64)
 
-build_files/30-kmods.sh installs kmod-yeetmouse-KVER, yeetmouse-kmod-common and
-yeetmouse from COPR and fails the build when they are missing. That failure costs a
-~20 minute image build and only says "re-run later". This preflight runs first and,
-when the packages are missing, asks abirkel/yeetmouse-rpm to build them:
+build_files/30-kmods.sh installs kmod-yeetmouse-KVER, yeetmouse-kmod-common,
+yeetmouse and yeetmouse-gui from COPR and fails the build when they are missing. That
+failure costs a ~20 minute image build and only says "re-run later". This preflight
+runs first and, when packages are missing, asks abirkel/yeetmouse-rpm to build them
+(poll-kernel-bump builds every package that is unpublished in a ready chroot, not
+only the kmod):
 
-  1. Read COPR's repository metadata (what dnf will see). All three packages are
-     present -> exit 0 at once.
+  1. Read COPR's repository metadata (what dnf will see). All four packages are
+     present, and the newest yeetmouse-gui has the newest yeetmouse's Version -> exit 0.
   2. Missing -> if a poll-kernel-bump.yml run is already queued or running, follow it.
      Otherwise dispatch one (needs YEETMOUSE_DISPATCH_TOKEN, Actions: write on
      abirkel/yeetmouse-rpm).
@@ -59,6 +61,8 @@ COMMON_NS = "{http://linux.duke.edu/metadata/common}"
 
 KMOD_COMMON = "yeetmouse-kmod-common"
 USERSPACE = "yeetmouse"
+# Split out of yeetmouse by yeetmouse-rpm 332474a; ships /usr/bin/yeetmouse-gui.
+GUI = "yeetmouse-gui"
 
 # Step name in yeetmouse-rpm's poll-kernel-bump.yml that fails when COPR's chroot
 # still has the previous kernel-devel. That is the one failure worth retrying.
@@ -253,9 +257,118 @@ def missing_packages(cfg: Config, state: RepoState) -> list:
         common = state.evrs(KMOD_COMMON, ("noarch", cfg.arch))
         if not kmod_evrs & common:
             missing.append(f"{KMOD_COMMON} at {', '.join(sorted(kmod_evrs))}")
-    if not state.evrs(USERSPACE, (cfg.arch,)):
+    user_evrs = state.evrs(USERSPACE, (cfg.arch,))
+    if not user_evrs:
         missing.append(USERSPACE)
+    gui_evrs = state.evrs(GUI, (cfg.arch,))
+    if not gui_evrs:
+        missing.append(GUI)
+    elif user_evrs:
+        # The GUI's Requires: yeetmouse is unversioned, so dnf installs the newest of
+        # each even when they come from different upstream pins. Compare the Version
+        # (epoch:version, not the per-package Release counter) of those two newest
+        # candidates. Older retained builds do not matter: dnf never picks them, and
+        # poll-kernel-bump only ever builds the current spec version.
+        user_v = _version(_newest(user_evrs))
+        gui_v = _version(_newest(gui_evrs))
+        if user_v != gui_v:
+            order = rpmvercmp(gui_v, user_v)
+            if order == 0:
+                # Same Version to rpm but spelled differently (2.0 vs 2_0). Both specs
+                # take Version from one upstream pin, so this is a packaging bug a
+                # rebuild cannot fix. Fail rather than dispatch.
+                raise Fatal(f"newest {USERSPACE} Version {user_v} and newest {GUI} "
+                            f"Version {gui_v} are spelled differently; fix the specs "
+                            "in abirkel/yeetmouse-rpm")
+            lower = (GUI, gui_v, user_v) if order < 0 else (USERSPACE, user_v, gui_v)
+            missing.append(f"{lower[0]} at {lower[2]} (newest is {lower[1]})")
     return missing
+
+
+def _version(evr: str) -> str:
+    """'epoch:version-release' -> 'epoch:version'."""
+    return evr.rsplit("-", 1)[0]
+
+
+def _newest(evrs) -> str:
+    """The highest 'epoch:version-release' in RPM order."""
+    best = None
+    for evr in evrs:
+        if best is None or evr_cmp(evr, best) > 0:
+            best = evr
+    return best
+
+
+def evr_cmp(a: str, b: str) -> int:
+    """Compare 'epoch:version[-release]' strings the way rpm does."""
+    def split(evr):
+        epoch, _, rest = evr.partition(":")
+        version, _, release = rest.partition("-")
+        return int(epoch or 0), version, release
+    ea, va, ra = split(a)
+    eb, vb, rb = split(b)
+    if ea != eb:
+        return -1 if ea < eb else 1
+    return rpmvercmp(va, vb) or rpmvercmp(ra, rb)
+
+
+def rpmvercmp(a: str, b: str) -> int:
+    """rpm's rpmvercmp(): ~ sorts before anything, ^ after the bare version but
+    before any further segment. A line-by-line port of rpmio/rpmvercmp.c."""
+    if a == b:
+        return 0
+    i = j = 0
+    n, m = len(a), len(b)
+
+    def skip(s, k):
+        while k < len(s) and not (s[k].isascii() and s[k].isalnum()) and s[k] not in "~^":
+            k += 1
+        return k
+
+    while i < n or j < m:
+        i, j = skip(a, i), skip(b, j)
+        ca = a[i] if i < n else ""
+        cb = b[j] if j < m else ""
+        if ca == "~" or cb == "~":
+            if ca != "~":
+                return 1
+            if cb != "~":
+                return -1
+            i, j = i + 1, j + 1
+            continue
+        if ca == "^" or cb == "^":
+            if not ca:
+                return -1
+            if not cb:
+                return 1
+            if ca != "^":
+                return 1
+            if cb != "^":
+                return -1
+            i, j = i + 1, j + 1
+            continue
+        if not (ca and cb):
+            break
+        numeric = ca.isdigit()
+        def take(s, k):
+            start = k
+            while k < len(s) and s[k].isascii() and (
+                    s[k].isdigit() if numeric else s[k].isalpha()):
+                k += 1
+            return s[start:k], k
+        sa, i = take(a, i)
+        sb, j = take(b, j)
+        if not sb:
+            return 1 if numeric else -1
+        if numeric:
+            sa, sb = sa.lstrip("0"), sb.lstrip("0")
+            if len(sa) != len(sb):
+                return 1 if len(sa) > len(sb) else -1
+        if sa != sb:
+            return 1 if sa > sb else -1
+    if i >= n and j >= m:
+        return 0
+    return 1 if i < n else -1
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +497,13 @@ def ensure(cfg: Config, http=urllib_http, clock=time.monotonic, sleep=time.sleep
 
         # Judge "still missing" only on metadata actually read this tick.
         if repo_ok and grace_until is not None and now >= grace_until:
+            if all(p.split()[0] in (USERSPACE, GUI) for p in last_missing):
+                raise Fatal(
+                    f"{tracked_url} finished successfully but COPR still lacks "
+                    f"{', '.join(last_missing)}. The kmod packages for {cfg.kver} are "
+                    "there, so this is not a kernel mismatch: check that run's "
+                    "ensure-built step and the package's COPR builds."
+                )
             raise Fatal(
                 f"{tracked_url} finished successfully but COPR still lacks "
                 f"{', '.join(last_missing)}. poll-kernel-bump builds only against "

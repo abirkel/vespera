@@ -116,22 +116,38 @@ else
 
     # --enable-repo adds this repo to the ones already enabled, so Fedora still
     # provides the dependencies (glibc, systemd, ...).
-    if dnf5 -y install --enable-repo="${yeetmouse_repo}" \
-            "kmod-yeetmouse-${KVER}" yeetmouse; then
+    # yeetmouse-gui has been its own package since yeetmouse-rpm 332474a; before that
+    # the yeetmouse package shipped /usr/bin/yeetmouse-gui. Keep this list in step with
+    # the packages .github/scripts/ensure_yeetmouse_kmod.py checks (a unit test reads
+    # this exact line, so keep it on one line).
+    yeetmouse_pkgs=("kmod-yeetmouse-${KVER}" yeetmouse yeetmouse-gui)
+    if dnf5 -y install --enable-repo="${yeetmouse_repo}" "${yeetmouse_pkgs[@]}"; then
         info "yeetmouse installed for ${KVER}"
     else
-        # Print the diagnostic BEFORE dying, so the log says which kernels are available
-        # rather than just that this one is not.
+        # Print the diagnostic BEFORE dying, so the log says which builds are available
+        # rather than just that this set is not installable.
         printf '\n' >&2
-        printf 'kmod-yeetmouse builds present in COPR abirkel/yeetmouse:\n' >&2
+        printf 'yeetmouse builds present in COPR abirkel/yeetmouse:\n' >&2
         dnf5 repoquery --disablerepo='*' --enablerepo="${yeetmouse_repo}" \
-            --qf '    %{name}\n' 'kmod-yeetmouse*' 2>/dev/null \
-            | grep -v '\.src' | sort -u >&2 || true
+            --qf '    %{name} %{evr}.%{arch}\n' 'kmod-yeetmouse*' 'yeetmouse*' \
+            2>/dev/null | grep -v '\.src$' | sort -u >&2 || true
         printf '\n' >&2
-        die "no installable kmod-yeetmouse build for ${KVER} in COPR abirkel/yeetmouse.
+        die "no installable yeetmouse package set for ${KVER} in COPR abirkel/yeetmouse.
   Run poll-kernel-bump.yml in abirkel/yeetmouse-rpm, then re-run this build.
   ENABLE_YEETMOUSE=0 skips yeetmouse entirely."
     fi
+
+    # The GUI's Requires: yeetmouse is unversioned, so check the pair came from the
+    # same upstream pin, and that the binary is still where users run it from. The
+    # queries are guarded so a failure reaches die instead of tripping set -e.
+    ym_ver="$(rpm -q --qf '%{EPOCHNUM}:%{VERSION}' yeetmouse)" \
+        || die "rpm cannot query the just-installed yeetmouse package"
+    gui_ver="$(rpm -q --qf '%{EPOCHNUM}:%{VERSION}' yeetmouse-gui)" \
+        || die "rpm cannot query the just-installed yeetmouse-gui package"
+    [[ "${ym_ver}" == "${gui_ver}" ]] \
+        || die "yeetmouse ${ym_ver} and yeetmouse-gui ${gui_ver} are from different pins"
+    [[ -x /usr/bin/yeetmouse-gui ]] \
+        || die "yeetmouse-gui is installed but /usr/bin/yeetmouse-gui is missing"
 
     dnf5 -y config-manager setopt "${yeetmouse_repo}".enabled=0
 fi

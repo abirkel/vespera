@@ -3,6 +3,8 @@ import gzip
 import hashlib
 import json
 import os
+import re
+import shlex
 import sys
 import unittest
 
@@ -22,7 +24,7 @@ def pkg(name, arch, evr=EVR):
 
 
 FULL = [pkg(f"kmod-yeetmouse-{KVER}", "x86_64"), pkg("yeetmouse-kmod-common", "noarch"),
-        pkg("yeetmouse", "x86_64")]
+        pkg("yeetmouse", "x86_64"), pkg("yeetmouse-gui", "x86_64")]
 NO_KMOD = FULL[1:]
 
 
@@ -149,13 +151,13 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.clock.t, 0)
 
     def test_missing_kmod_common_counts_as_missing(self):
-        w = World(self.clock, {0: [FULL[0], FULL[2]]})
+        w = World(self.clock, {0: [FULL[0], FULL[2], FULL[3]]})
         self.assertEqual(m.missing_packages(cfg(), m.read_repo(cfg(), w, 0)),
                          [f"yeetmouse-kmod-common at 0:{EVR[1]}-{EVR[2]}"])
 
     def test_kmod_common_at_other_release_counts_as_missing(self):
         w = World(self.clock, {0: [FULL[0], pkg("yeetmouse-kmod-common", "noarch",
-                                                 ("0", EVR[1], "2.fc44")), FULL[2]]})
+                                                 ("0", EVR[1], "2.fc44")), FULL[2], FULL[3]]})
         self.assertEqual(len(m.missing_packages(cfg(), m.read_repo(cfg(), w, 0))), 1)
 
     def test_missing_without_token_fails_fast(self):
@@ -402,6 +404,97 @@ class Tests(unittest.TestCase):
                 return m.Response(200, repomd(data, "repodata/p.xml.xz"))
             return m.Response(200, data)
         self.assertEqual(m.missing_packages(cfg(), m.read_repo(cfg(), http, 0)), [])
+
+    def missing(self, pkgs):
+        w = World(self.clock, {0: pkgs})
+        return m.missing_packages(cfg(), m.read_repo(cfg(), w, 0))
+
+    def test_missing_gui_counts_as_missing(self):
+        self.assertEqual(self.missing(FULL[:3]), ["yeetmouse-gui"])
+
+    def test_gui_of_other_arch_does_not_count(self):
+        self.assertEqual(self.missing(FULL[:3] + [pkg("yeetmouse-gui", "noarch")]),
+                         ["yeetmouse-gui"])
+
+    def test_gui_at_older_version_counts_as_missing(self):
+        newer = ("0", "0^20261101gitabcdef0", "1.fc44")
+        self.assertEqual(self.missing(FULL + [pkg("yeetmouse", "x86_64", newer)]),
+                         ["yeetmouse-gui at 0:0^20261101gitabcdef0 "
+                          f"(newest is 0:{EVR[1]})"])
+
+    def test_old_cli_version_without_gui_does_not_block(self):
+        # dnf never installs an older retained build, and the poller cannot backfill
+        # one, so only the newest candidates count.
+        older = ("0", "0^20260101git1111111", "1.fc44")
+        self.assertEqual(self.missing(FULL + [pkg("yeetmouse", "x86_64", older)]), [])
+
+    def test_gui_newer_than_cli_names_the_cli(self):
+        newer = ("0", "0^20261101gitabcdef0", "1.fc44")
+        self.assertEqual(self.missing(FULL + [pkg("yeetmouse-gui", "x86_64", newer)]),
+                         ["yeetmouse at 0:0^20261101gitabcdef0 "
+                          f"(newest is 0:{EVR[1]})"])
+
+    def test_own_success_with_kmod_common_missing_keeps_kernel_message(self):
+        w = World(self.clock, {0: [FULL[0], FULL[2], FULL[3]]})
+        w.runs[100] = [(0, done("success"))]
+        with self.assertRaisesRegex(m.Fatal, "builds only against"):
+            run(w, self.clock, cfg())
+
+    def test_rpm_equal_but_differently_spelled_versions_fail_without_dispatch(self):
+        w = World(self.clock, {0: FULL[:3] + [pkg("yeetmouse-gui", "x86_64",
+                                                  ("0", EVR[1].replace("git", "_git"),
+                                                   "1.fc44"))]})
+        self.assertEqual(m.rpmvercmp(EVR[1], EVR[1].replace("git", "_git")), 0)
+        with self.assertRaisesRegex(m.Fatal, "spelled differently"):
+            run(w, self.clock, cfg())
+        self.assertEqual(w.dispatched, [])
+
+    def test_rpmvercmp(self):
+        cases = [("1.0", "1.0", 0), ("1.0", "1.1", -1), ("1.01", "1.1", 0),
+                 ("1.0~rc1", "1.0", -1), ("1.0^1", "1.0", 1), ("1.0^1", "1.0.1", -1),
+                 ("10", "9", 1), ("1a", "1", 1), ("a", "1", -1), ("2.0", "2_0", 0),
+                 ("0^20260803git78dcd0d", "0^20261101gitabcdef0", -1)]
+        for a, b, want in cases:
+            with self.subTest(a=a, b=b):
+                self.assertEqual(m.rpmvercmp(a, b), want)
+                self.assertEqual(m.rpmvercmp(b, a), -want)
+        self.assertEqual(m.evr_cmp("0:1-2.fc44", "0:1-10.fc44"), -1)
+        self.assertEqual(m.evr_cmp("1:0-1", "0:9-9"), 1)
+
+    def test_gui_at_other_release_same_version_is_fine(self):
+        # Release is a per-package packaging counter; only Version must match.
+        gui = pkg("yeetmouse-gui", "x86_64", ("0", EVR[1], "3.fc44"))
+        self.assertEqual(self.missing(FULL[:3] + [gui]), [])
+
+    def test_missing_gui_without_token_names_it(self):
+        w = World(self.clock, {0: FULL[:3]})
+        with self.assertRaisesRegex(m.Fatal, "yeetmouse-gui.*no YEETMOUSE_DISPATCH_TOKEN"):
+            run(w, self.clock, cfg(token=""))
+
+    def test_missing_gui_dispatches_and_recovers(self):
+        w = World(self.clock, {0: FULL[:3], 900: FULL})
+        w.runs[100] = [(0, {"status": "in_progress"}), (850, done("success"))]
+        self.assertIn("1 dispatch", run(w, self.clock, cfg()))
+
+    def test_own_success_without_gui_does_not_blame_the_kernel(self):
+        w = World(self.clock, {0: FULL[:3]})
+        w.runs[100] = [(0, done("success"))]
+        with self.assertRaisesRegex(m.Fatal, "not a kernel mismatch"):
+            run(w, self.clock, cfg())
+
+    def test_install_script_installs_every_checked_package(self):
+        # The GUI went missing because this list and the preflight drifted apart.
+        path = os.path.join(os.path.dirname(__file__), "..", "..", "..",
+                            "build_files", "30-kmods.sh")
+        with open(path, encoding="utf-8") as f:
+            src = f.read()
+        decl = re.findall(r"^[ \t]*yeetmouse_pkgs=\(([^)#]*)\)[ \t]*$", src, re.M)
+        self.assertEqual(len(decl), 1, "expected one one-line yeetmouse_pkgs=(...)")
+        self.assertEqual(shlex.split(decl[0]),
+                         ["kmod-yeetmouse-${KVER}", m.USERSPACE, m.GUI])
+        install = re.findall(r"^[ \t]*if dnf5 -y install .*$", src, re.M)
+        self.assertEqual(install, ['    if dnf5 -y install --enable-repo="${yeetmouse_repo}" '
+                                   '"${yeetmouse_pkgs[@]}"; then'])
 
     def test_bad_kver(self):
         with self.assertRaises(m.Fatal):
