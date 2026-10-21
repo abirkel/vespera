@@ -3,13 +3,15 @@
 
 Usage: ensure_yeetmouse_kmod.py KVER     (e.g. 7.2.9-200.fc44.x86_64)
 
-build_files/30-kmods.sh installs kmod-yeetmouse-KVER, yeetmouse-kmod-common and
-yeetmouse from COPR and fails the build when they are missing. That failure costs a
-~20 minute image build and only says "re-run later". This preflight runs first and,
-when the packages are missing, asks abirkel/yeetmouse-rpm to build them:
+build_files/30-kmods.sh installs kmod-yeetmouse-KVER, yeetmouse-kmod-common,
+yeetmouse and yeetmouse-gui from COPR and fails the build when they are missing. That
+failure costs a ~20 minute image build and only says "re-run later". This preflight
+runs first and, when packages are missing, asks abirkel/yeetmouse-rpm to build them
+(poll-kernel-bump builds every package that is unpublished in a ready chroot, not
+only the kmod):
 
-  1. Read COPR's repository metadata (what dnf will see). All three packages are
-     present -> exit 0 at once.
+  1. Read COPR's repository metadata (what dnf will see). All four packages are
+     present, and yeetmouse-gui exists at every yeetmouse Version -> exit 0 at once.
   2. Missing -> if a poll-kernel-bump.yml run is already queued or running, follow it.
      Otherwise dispatch one (needs YEETMOUSE_DISPATCH_TOKEN, Actions: write on
      abirkel/yeetmouse-rpm).
@@ -59,6 +61,8 @@ COMMON_NS = "{http://linux.duke.edu/metadata/common}"
 
 KMOD_COMMON = "yeetmouse-kmod-common"
 USERSPACE = "yeetmouse"
+# Split out of yeetmouse by yeetmouse-rpm 332474a; ships /usr/bin/yeetmouse-gui.
+GUI = "yeetmouse-gui"
 
 # Step name in yeetmouse-rpm's poll-kernel-bump.yml that fails when COPR's chroot
 # still has the previous kernel-devel. That is the one failure worth retrying.
@@ -253,9 +257,26 @@ def missing_packages(cfg: Config, state: RepoState) -> list:
         common = state.evrs(KMOD_COMMON, ("noarch", cfg.arch))
         if not kmod_evrs & common:
             missing.append(f"{KMOD_COMMON} at {', '.join(sorted(kmod_evrs))}")
-    if not state.evrs(USERSPACE, (cfg.arch,)):
+    user_evrs = state.evrs(USERSPACE, (cfg.arch,))
+    if not user_evrs:
         missing.append(USERSPACE)
+    gui_versions = {_version(e) for e in state.evrs(GUI, (cfg.arch,))}
+    if not gui_versions:
+        missing.append(GUI)
+    else:
+        # The GUI's Requires: yeetmouse is unversioned, so dnf would pair the newest
+        # yeetmouse with an older GUI. Both are built from the same upstream pin, so
+        # every yeetmouse Version (epoch:version, not the per-package Release counter)
+        # needs a GUI at that Version.
+        lagging = sorted({_version(e) for e in user_evrs} - gui_versions)
+        if lagging:
+            missing.append(f"{GUI} at {', '.join(lagging)}")
     return missing
+
+
+def _version(evr: str) -> str:
+    """'epoch:version-release' -> 'epoch:version'."""
+    return evr.rsplit("-", 1)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +405,13 @@ def ensure(cfg: Config, http=urllib_http, clock=time.monotonic, sleep=time.sleep
 
         # Judge "still missing" only on metadata actually read this tick.
         if repo_ok and grace_until is not None and now >= grace_until:
+            if not any(p.startswith("kmod-yeetmouse-") for p in last_missing):
+                raise Fatal(
+                    f"{tracked_url} finished successfully but COPR still lacks "
+                    f"{', '.join(last_missing)}. The kmod for {cfg.kver} is there, so "
+                    "this is not a kernel mismatch: check that run's ensure-built step "
+                    "and the package's COPR builds."
+                )
             raise Fatal(
                 f"{tracked_url} finished successfully but COPR still lacks "
                 f"{', '.join(last_missing)}. poll-kernel-bump builds only against "
