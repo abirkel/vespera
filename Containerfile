@@ -29,7 +29,7 @@
 # share one ARG between two FROMs.
 #
 ARG BASE_IMAGE="ghcr.io/ublue-os/kinoite-nvidia"
-ARG BASE_TAG="latest@sha256:8c45c47e81bb167a0a39ca01c063a9ff38fb68c167b13e561b57b6f86bfb7858"
+ARG BASE_TAG="latest@sha256:1c325baedaf740540b8068559767dca0145ef2eff76fd39e8b3eab84393bf6d4"
 
 # akmods ships prebuilt, MOK-signed out-of-tree modules built against the *exact*
 # kernel in the base. A scratch image with no shell — the RPMs are bind-mounted below.
