@@ -82,7 +82,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The first attempt may fail on a transient download error and is retried once.
       - name: Install cosign
+        id: cosign
+        continue-on-error: true
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Back off before cosign retry
+        if: steps.cosign.outcome == 'failure'
+        run: sleep 20
+
+      - name: Install cosign (retry)
+        if: steps.cosign.outcome == 'failure'
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       # Signed images only: an installer built from an unverified image hands out
