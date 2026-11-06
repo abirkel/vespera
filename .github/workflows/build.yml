@@ -711,12 +711,13 @@ jobs:
       # and sourceRpm. It also avoids syft's cost entirely - they must `podman export` the
       # whole rootfs and untar it before scanning.
       #
-      # Verified against a local registry using cosign v3.1.2, the version this pipeline
-      # pins: signing, then attaching a referrer of this artifactType, leaves
-      # `cosign verify --key` passing. So this does not repeat the referrers-fallback
-      # breakage that attest-build-provenance's push-to-registry: true caused, where a
-      # keyless sigstore bundle in the fallback index made cosign refuse the whole
-      # verification with "expected key signature, not certificate".
+      # Verified against a local registry using cosign v3.1.2 (the pipeline has since
+      # moved to v3.1.4 and this was not repeated): signing, then attaching a referrer of
+      # this artifactType, leaves `cosign verify --key` passing. So this does not repeat
+      # the referrers-fallback breakage that attest-build-provenance's
+      # push-to-registry: true caused, where a keyless sigstore bundle in the fallback
+      # index made cosign refuse the whole verification with "expected key signature,
+      # not certificate".
       - name: Install ORAS
         if: github.event_name != 'pull_request' && steps.changed.outputs.changed == 'true'
         uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
