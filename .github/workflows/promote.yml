@@ -194,6 +194,7 @@ jobs:
       - name: Compare testing against latest
         id: gate
         if: steps.inflight.outputs.skip != 'true'
+        timeout-minutes: 20
         run: |
           set -euo pipefail
           TESTING_MANIFEST="$(.github/scripts/fetch-manifest.sh \
@@ -235,10 +236,12 @@ jobs:
           # own "Decide whether the image changed" step exists to prevent one level
           # down; this is that same guard, one level up.
           TESTING_FP="$(
-            skopeo inspect "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${SOURCE_TAG}" \
+            skopeo --command-timeout 5m inspect --retry-times 5 \
+              "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${SOURCE_TAG}" \
               | jq -r '.Labels["dev.vespera.pkg-fingerprint"] // empty'
           )"
-          LATEST_FP="$(skopeo inspect "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${TARGET_TAG}" \
+          LATEST_FP="$(skopeo --command-timeout 5m inspect --retry-times 5 \
+            "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${TARGET_TAG}" \
             | jq -r '.Labels["dev.vespera.pkg-fingerprint"] // empty')"
           if [[ -n "${TESTING_FP}" && "${TESTING_FP}" == "${LATEST_FP}" ]]; then
             echo "noop=true" >>"$GITHUB_OUTPUT"
@@ -346,6 +349,7 @@ jobs:
       # with no recompile, which is what this step now does.
       - name: Compute latest version
         id: latest_version
+        timeout-minutes: 15
         if: steps.inflight.outputs.skip != 'true' && steps.decide.outputs.do_promote == 'true'
         run: |
           set -euo pipefail
@@ -359,14 +363,21 @@ jobs:
           # "testing-44.20260919.2" returns the literal string "testing-44", not "44",
           # which then poisons every downstream tag/version computed from it.
           TESTING_VERSION="$(
-            skopeo inspect "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${SOURCE_TAG}" \
+            skopeo --command-timeout 5m inspect --retry-times 5 \
+              "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${SOURCE_TAG}" \
               | jq -r '.Labels["org.opencontainers.image.version"]'
           )"
           FEDORA_MAJOR="$(echo "${TESTING_VERSION#testing-}" | cut -d. -f1)"
           DATE="$(date -u +%Y%m%d)"
           PREFIX="${FEDORA_MAJOR}.${DATE}"
-          TAGS_JSON="$(skopeo list-tags "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}" \
-                       2>/dev/null || echo '{"Tags":[]}')"
+          # A failed listing must stop the promotion. Treating it as "no tags exist" would
+          # make VERSION the bare date prefix and overwrite today's first image.
+          if ! TAGS_JSON="$(skopeo --command-timeout 5m list-tags --retry-times 5 \
+                              "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}")"; then
+            echo "::error::Could not list tags for ${IMAGE_REGISTRY}/${IMAGE_NAME};" \
+              "refusing to guess the promoted version number."
+            exit 1
+          fi
           BARE_EXISTS="$(jq -r --arg p "${PREFIX}" '.Tags[]? | select(. == $p)' <<<"${TAGS_JSON}")"
           HIGHEST="$(jq -r --arg p "${PREFIX}." \
                        '.Tags[]? | select(startswith($p)) | ltrimstr($p)' <<<"${TAGS_JSON}" \
@@ -387,7 +398,8 @@ jobs:
         if: steps.inflight.outputs.skip != 'true' && steps.decide.outputs.do_promote == 'true'
         run: |
           set -euo pipefail
-          DIGEST="$(skopeo inspect "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${SOURCE_TAG}" \
+          DIGEST="$(skopeo --command-timeout 5m inspect --retry-times 5 \
+            "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${SOURCE_TAG}" \
             | jq -r '.Digest')"
           echo "digest=${DIGEST}" >>"$GITHUB_OUTPUT"
           buildah pull "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}@${DIGEST}"
@@ -444,8 +456,27 @@ jobs:
       # Re-signing is unavoidable regardless of retag-vs-rebuild: the signature is over
       # the digest, and rewriting even one label changes the digest. Same mechanics
       # build.yml's own "Sign image" step uses.
+      # The first attempt may fail on a transient download error and is retried once.
       - name: Install cosign
+        id: cosign
         if: steps.inflight.outputs.skip != 'true' && steps.decide.outputs.do_promote == 'true'
+        continue-on-error: true
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.4
+
+      - name: Back off before cosign retry
+        if: >-
+          steps.inflight.outputs.skip != 'true'
+          && steps.decide.outputs.do_promote == 'true'
+          && steps.cosign.outcome == 'failure'
+        run: sleep 20
+
+      - name: Install cosign (retry)
+        if: >-
+          steps.inflight.outputs.skip != 'true'
+          && steps.decide.outputs.do_promote == 'true'
+          && steps.cosign.outcome == 'failure'
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: v3.1.4
