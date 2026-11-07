@@ -137,6 +137,14 @@ NETFS=(
 )
 
 # ---------------------------------------------------------------------------
+# Legacy AppImages. Fedora 44 Atomic Desktops dropped FUSE 2, and AppImages built on
+# the old runtime dlopen libfuse.so.2.
+# ---------------------------------------------------------------------------
+APPIMAGE=(
+    fuse-libs
+)
+
+# ---------------------------------------------------------------------------
 # Audio. The SOFA filter-chain module is the engine behind virtual 7.1 surround over
 # stereo headphones; the LADSPA/CAPS plugins are what surround recipes build on.
 # ---------------------------------------------------------------------------
@@ -211,6 +219,7 @@ dnf5 -y install \
     "${IME[@]}" \
     "${IDEVICE[@]}" \
     "${NETFS[@]}" \
+    "${APPIMAGE[@]}" \
     "${AUDIO[@]}" \
     "${CLI[@]}" \
     "${DEV[@]}" \
