@@ -33,9 +33,15 @@ def resolve(flavor, config):
     """Return (fedora_major, kernel_evr, candidate_tag) for a `skopeo inspect --config` dict."""
     if not FLAVOR_RE.match(flavor):
         raise ResolveError(f"invalid akmods flavor {flavor!r}")
-    labels = (config.get("config") or {}).get("Labels") or {}
+    inner = config.get("config") if isinstance(config, dict) else None
+    labels = inner.get("Labels") if isinstance(inner, dict) else None
+    if not isinstance(labels, dict):
+        raise ResolveError("base image config has no Labels object")
 
     version = labels.get("org.opencontainers.image.version", "")
+    if not isinstance(version, str):
+        raise ResolveError(
+            f"base org.opencontainers.image.version is not a string: {version!r}")
     m = VERSION_RE.match(version)
     if not m:
         raise ResolveError(
@@ -44,6 +50,8 @@ def resolve(flavor, config):
     version_major = m.group(1)
 
     kernel = labels.get("ostree.linux", "")
+    if not isinstance(kernel, str):
+        raise ResolveError(f"base ostree.linux is not a string: {kernel!r}")
     k = KERNEL_RE.match(kernel)
     if not k:
         raise ResolveError(

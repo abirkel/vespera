@@ -65,9 +65,29 @@ class ResolveTests(unittest.TestCase):
                 m.resolve("main", cfg(kernel=bad))
 
     def test_empty_or_missing_config_fails(self):
-        for bad in ({}, {"config": {}}, {"config": {"Labels": None}}, {"config": None}):
+        for bad in ({}, {"config": {}}, {"config": {"Labels": None}}, {"config": None},
+                    {"config": {"Labels": []}}, {"config": []}, [], None, "x", 5):
             with self.subTest(cfg=bad), self.assertRaises(m.ResolveError):
                 m.resolve("main", bad)
+
+    def test_present_but_non_string_labels_fail_cleanly(self):
+        for key in ("org.opencontainers.image.version", "ostree.linux"):
+            for bad in (None, 44, ["44"], {"a": 1}, True):
+                c = cfg()
+                c["config"]["Labels"][key] = bad
+                with self.subTest(key=key, value=bad), self.assertRaises(m.ResolveError):
+                    m.resolve("main", c)
+
+    def test_other_kernel_shapes(self):
+        self.assertEqual(
+            m.resolve("main", cfg("45.20261107.1", "7.3.0-0.rc1.fc45.aarch64")),
+            ("45", "7.3.0-0.rc1.fc45", "main-45-7.3.0-0.rc1.fc45"))
+
+    def test_last_fc_segment_wins(self):
+        # A dist tag can repeat; the release is the LAST .fcNN, followed only by the arch.
+        self.assertEqual(
+            m.resolve("main", cfg("45.20261107.1", "7.2.15-200.fc44.fc45.x86_64"))[:2],
+            ("45", "7.2.15-200.fc44.fc45"))
 
     def test_bad_flavor_fails(self):
         # "main-44" is the old value of AKMODS_TAG; as a flavor it would double the release.
@@ -84,6 +104,14 @@ class MainTests(unittest.TestCase):
     def test_error_goes_to_stderr_with_exit_1(self):
         rc, out, err = run_main(["x", "main"], json.dumps(cfg(kernel="bogus")))
         self.assertEqual((rc, out), (1, ""))
+        self.assertIn("ostree.linux", err)
+
+    def test_null_label_exits_1_not_a_traceback(self):
+        c = cfg()
+        c["config"]["Labels"]["ostree.linux"] = None
+        rc, out, err = run_main(["x", "main"], json.dumps(c))
+        self.assertEqual((rc, out), (1, ""))
+        self.assertNotIn("Traceback", err)
         self.assertIn("ostree.linux", err)
 
     def test_invalid_json_exits_1(self):
