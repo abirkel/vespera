@@ -95,11 +95,9 @@
     // to remove, resurrected through the global pin default instead of a
     // dedicated packageRule.
     //
-    // The main-44 -> main-45 move is still the one annual manual edit in this
-    // repo: bump the bare tag in the Containerfile once the base has actually
-    // crossed to F45. Renovate does not do this for the same reason it never
-    // touched AKMODS_TAG's Fedora-major digit before: doing it early would break
-    // kmods against a base that has not moved yet.
+    // The Fedora release is not edited by hand either: the build derives it from the
+    // base image's labels (.github/scripts/resolve_akmods_candidate.py), so the
+    // main-44 -> main-45 move happens by itself when the base crosses to F45.
     // ------------------------------------------------------------------
     {
       matchPackageNames: ["ghcr.io/ublue-os/akmods"],
