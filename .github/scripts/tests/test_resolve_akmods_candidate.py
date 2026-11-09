@@ -1,4 +1,7 @@
-"""Tests for resolve_akmods_candidate.py. Run: python3 -m unittest discover -s .github/scripts/tests"""
+"""Tests for resolve_akmods_candidate.py.
+
+Run: python3 -m unittest discover -s .github/scripts/tests
+"""
 import io
 import json
 import os
