@@ -194,7 +194,7 @@ jobs:
 
       # AKMODS_TAG in the Containerfile is a floating tag (main-44), not a pinned
       # digest — see the comment above that ARG. Renovate no longer bumps it: akmods
-      # republishes main-44 roughly daily, independently of the base image's own
+      # republishes it roughly daily, independently of the base image's own
       # schedule, so a Renovate-pinned digest for it agreed with the base's pinned
       # digest only by chance (the recurring stuck-PR problem this step replaces).
       #
@@ -222,38 +222,46 @@ jobs:
           BASE_TAG="$(grep -oP '^ARG BASE_TAG="\K[^"]+' Containerfile)"
           AKMODS_IMAGE="$(grep -oP '^ARG AKMODS_IMAGE="\K[^"]+' Containerfile)"
           AKMODS_TAG="$(grep -oP '^ARG AKMODS_TAG="\K[^"]+' Containerfile)"
+          AKMODS_FLAVOR="$(grep -oP '^ARG AKMODS_FLAVOR="\K[^"]+' Containerfile)"
 
           if [[ "${BASE_TAG}" == *@* ]]; then
             BASE_REF="${BASE_IMAGE}@${BASE_TAG#*@}"
           else
             BASE_REF="${BASE_IMAGE}:${BASE_TAG}"
           fi
-          # AKMODS_TAG is the floating flavor/Fedora prefix (e.g. main-44). Resolve
-          # the retained, kernel-specific tag from the pinned base instead of racing
-          # the current floating tag, then pin that candidate's immutable digest.
+          # The retained, kernel-specific tag is derived from the pinned base: the
+          # flavor comes from AKMODS_FLAVOR, the Fedora release and kernel from the
+          # base's own labels. A base that crosses to a new Fedora release therefore
+          # needs no edit here. AKMODS_TAG is only the default for a local build. The
+          # candidate's immutable digest is then pinned instead of racing the floating tag.
           if [[ "${AKMODS_TAG}" == *@* ]]; then
-            echo "::error::AKMODS_TAG must be a bare flavor/Fedora tag, not a digest."
+            echo "::error::AKMODS_TAG must be a bare tag, not a digest."
             exit 1
           fi
 
           echo "Base ref             : ${BASE_REF}"
-          echo "Akmods tag prefix    : ${AKMODS_TAG}"
+          echo "Akmods flavor        : ${AKMODS_FLAVOR}"
 
-          base_kver="$(
+          base_config="$(
             skopeo --command-timeout 5m inspect --retry-times 5 --config \
-              "docker://${BASE_REF}" \
-              | python3 .github/scripts/read-ostree-linux-label.py
+              "docker://${BASE_REF}"
           )"
+          base_kver="$(python3 .github/scripts/read-ostree-linux-label.py <<<"${base_config}")"
           if [[ -z "${base_kver}" || "${base_kver}" != *.* ]]; then
             echo "::error::Could not read a VERSION-RELEASE.ARCH ostree.linux label" \
               "from ${BASE_REF}; refusing to resolve akmods."
             exit 1
           fi
 
-          # uBlue names retained akmods tags as <flavor>-<fedora>-<kernel EVR>.
-          # Drop only the final architecture suffix from the base label.
-          kernel_evr="${base_kver%.*}"
-          candidate_tag="${AKMODS_TAG}-${kernel_evr}"
+          # uBlue names retained akmods tags <flavor>-<fedora>-<kernel EVR>. The script
+          # requires the base's version label and kernel string to agree on the release.
+          if ! candidate_tag="$(
+            python3 .github/scripts/resolve_akmods_candidate.py \
+              "${AKMODS_FLAVOR}" <<<"${base_config}"
+          )"; then
+            echo "::error::Could not derive the akmods tag from ${BASE_REF}."
+            exit 1
+          fi
           candidate_ref="${AKMODS_IMAGE}:${candidate_tag}"
 
           echo "Base image kernel    : ${base_kver}"
@@ -265,7 +273,7 @@ jobs:
           )"; then
             echo "::error::No retained akmods image was found for base kernel" \
               "${base_kver}: ${candidate_ref}."
-            echo "::error::Refusing to fall back to floating ${AKMODS_TAG}, which" \
+            echo "::error::Refusing to fall back to a floating akmods tag, which" \
               "could contain modules for another kernel. Re-run after uBlue" \
               "publishes this candidate, or update the base image."
             exit 1
@@ -273,7 +281,7 @@ jobs:
 
           if ! akmods_kver="$(
             skopeo --command-timeout 5m inspect --retry-times 5 --config \
-              "docker://${candidate_ref}" 2>/dev/null \
+              "docker://${AKMODS_IMAGE}@${akmods_digest}" 2>/dev/null \
               | python3 .github/scripts/read-ostree-linux-label.py
           )"; then
             echo "::error::Could not read ostree.linux from ${candidate_ref};" \

@@ -44,6 +44,7 @@ jobs:
         run: |
           base_tag="$(grep -oP '^ARG BASE_TAG="\K[^"]+' Containerfile)"
           akmods_tag="$(grep -oP '^ARG AKMODS_TAG="\K[^"]+' Containerfile)"
+          akmods_flavor="$(grep -oP '^ARG AKMODS_FLAVOR="\K[^"]+' Containerfile)"
           base_image="$(grep -oP '^ARG BASE_IMAGE="\K[^"]+' Containerfile)"
           akmods_image="$(grep -oP '^ARG AKMODS_IMAGE="\K[^"]+' Containerfile)"
 
@@ -52,27 +53,27 @@ jobs:
           # part of the pin anyway.
           base_digest="${base_tag##*@}"
 
-          # AKMODS_TAG is the floating flavor/Fedora prefix (e.g. main-44). The
-          # authoritative build resolves a retained kernel-specific tag from it.
+          # The authoritative build derives a retained kernel-specific tag from the
+          # flavor and the base's own labels. AKMODS_TAG is only a local-build default.
           echo "base_ref=${base_image}@${base_digest}" >> "${GITHUB_OUTPUT}"
           echo "akmods_image=${akmods_image}" >> "${GITHUB_OUTPUT}"
           echo "akmods_tag=${akmods_tag}" >> "${GITHUB_OUTPUT}"
+          echo "akmods_flavor=${akmods_flavor}" >> "${GITHUB_OUTPUT}"
 
       - name: Compare kernel versions
         env:
           BASE_REF: ${{ steps.tags.outputs.base_ref }}
           AKMODS_IMAGE: ${{ steps.tags.outputs.akmods_image }}
           AKMODS_TAG: ${{ steps.tags.outputs.akmods_tag }}
+          AKMODS_FLAVOR: ${{ steps.tags.outputs.akmods_flavor }}
         run: |
           set -euo pipefail
 
           echo "Base image ref (proposed by this PR): ${BASE_REF}"
-          echo "Akmods tag prefix                   : ${AKMODS_TAG}"
+          echo "Akmods flavor                       : ${AKMODS_FLAVOR}"
 
-          base_kver="$(
-            skopeo inspect --config "docker://${BASE_REF}" \
-              | python3 .github/scripts/read-ostree-linux-label.py
-          )"
+          base_config="$(skopeo inspect --config "docker://${BASE_REF}")"
+          base_kver="$(python3 .github/scripts/read-ostree-linux-label.py <<<"${base_config}")"
           if [[ -z "${base_kver}" || "${base_kver}" != *.* ]]; then
             echo "::warning::Could not read a VERSION-RELEASE.ARCH ostree.linux" \
               "label from ${BASE_REF}. The full build will verify it."
@@ -85,8 +86,14 @@ jobs:
             exit 0
           fi
 
-          kernel_evr="${base_kver%.*}"
-          candidate_tag="${AKMODS_TAG}-${kernel_evr}"
+          if ! candidate_tag="$(
+            python3 .github/scripts/resolve_akmods_candidate.py \
+              "${AKMODS_FLAVOR}" <<<"${base_config}"
+          )"; then
+            echo "::warning::Could not derive the akmods tag from ${BASE_REF}." \
+              "The full build will fail closed."
+            exit 0
+          fi
           candidate_ref="${AKMODS_IMAGE}:${candidate_tag}"
 
           echo "Base image kernel                    : ${base_kver}"

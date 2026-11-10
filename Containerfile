@@ -42,9 +42,13 @@ ARG BASE_TAG="latest@sha256:64e88b062afef86b16f3b4a42a99ae6b4089170e93118a96fa77
 # `ostree.linux` label, verifies that candidate's label, then pins its digest. It
 # fails closed rather than falling back to a floating tag for another kernel.
 #
-# main-44 -> main-45 is still the one manual edit needed when the base crosses to a new
-# Fedora release — nothing here resolves that automatically, on purpose.
+# The Fedora release is NOT set here. The workflows take the flavor from AKMODS_FLAVOR
+# and the Fedora release and kernel from the base image's own labels, so a base that
+# crosses to a new Fedora release needs no edit (see
+# .github/scripts/resolve_akmods_candidate.py). AKMODS_TAG is only the default for a
+# direct local build and must be overridden when the base is on a different release.
 ARG AKMODS_IMAGE="ghcr.io/ublue-os/akmods"
+ARG AKMODS_FLAVOR="main"
 ARG AKMODS_TAG="main-44"
 FROM ${AKMODS_IMAGE}:${AKMODS_TAG} AS akmods
 

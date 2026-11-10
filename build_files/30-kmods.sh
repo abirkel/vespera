@@ -16,9 +16,10 @@ log "Installing kmods for kernel ${KVER}"
 #
 # FATAL if missing. This is a required driver, not an optional extra.
 #
-# BASE_TAG is `latest`, so the base rolls to Fedora N+1 on its own, but akmods has no
-# rolling tag and AKMODS_TAG names a release explicitly. If the base crosses to F45
-# while AKMODS_TAG says main-44, no kmod can match. Fedora-release matching alone is
+# BASE_TAG is `latest`, so the base rolls to Fedora N+1 on its own, and the CI workflows
+# pick the matching akmods release from the base's labels. A direct local build uses
+# AKMODS_TAG as written: if the base is on F45 while AKMODS_TAG says main-44, no kmod
+# can match. Fedora-release matching alone is
 # also not enough: akmods and the base image can be on the same Fedora release but
 # different kernel builds (e.g. base on 7.1.13-200.fc44 while akmods only has
 # 7.2.4-200.fc44), in which case the kmod filename simply will not match KVER. Both
