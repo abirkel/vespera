@@ -6,7 +6,7 @@
 # every logo, pixmap, plymouth theme and kcm-about-distrorc are left untouched.
 #
 # The one addition is /usr/share/ublue-os/image-info.json. Verified: kinoite-nvidia:44
-# does not ship it — it is a Bazzite/Aurora convention, not a kinoite-main one — so this
+# (and so kinoite-main) does not ship it — it is a Bazzite/Aurora convention — so this
 # CREATES it rather than patching. Rebase helpers, ujust recipes and third-party
 # updaters read it to learn what image to track; the old vespera image had a
 # hand-written one claiming to be ublue-os/bazzite-nvidia-open, which is the failure
@@ -60,7 +60,7 @@ jq -n \
         "image-ref":        $ref,
         "image-tag":        $image_tag,
         "image-flavor":     "nvidia",
-        "base-image-name":  "kinoite-nvidia",
+        "base-image-name":  "kinoite-main",
         "fedora-version":   $fedora,
         "version":          $version,
         "version-pretty":   $version,

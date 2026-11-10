@@ -1,5 +1,6 @@
 #!/usr/bin/bash
-# dnf policy. Must run before any install.
+# dnf policy. Must run before any install, except nvidia.sh, which runs earlier on
+# purpose (see its header).
 source "${CTX}/build_files/lib/common.sh"
 
 log "Configuring dnf"

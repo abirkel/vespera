@@ -213,6 +213,9 @@ jobs:
       # digest for a PR-time check to compare against. Fails closed: build_files/
       # 30-kmods.sh already treats a v4l2loopback/kernel mismatch as fatal, but this
       # step catches it in seconds instead of after the full ~20 minute compose.
+      #
+      # Done twice, the same way: for akmods (AKMODS_TAG) and for akmods-nvidia-open
+      # (AKMODS_NVIDIA_TAG). Both use the same retained-tag scheme and flavor.
       - name: Resolve matching akmods digest
         timeout-minutes: 20
         id: akmods
@@ -220,8 +223,6 @@ jobs:
           set -euo pipefail
           BASE_IMAGE="$(grep -oP '^ARG BASE_IMAGE="\K[^"]+' Containerfile)"
           BASE_TAG="$(grep -oP '^ARG BASE_TAG="\K[^"]+' Containerfile)"
-          AKMODS_IMAGE="$(grep -oP '^ARG AKMODS_IMAGE="\K[^"]+' Containerfile)"
-          AKMODS_TAG="$(grep -oP '^ARG AKMODS_TAG="\K[^"]+' Containerfile)"
           AKMODS_FLAVOR="$(grep -oP '^ARG AKMODS_FLAVOR="\K[^"]+' Containerfile)"
 
           if [[ "${BASE_TAG}" == *@* ]]; then
@@ -234,11 +235,6 @@ jobs:
           # base's own labels. A base that crosses to a new Fedora release therefore
           # needs no edit here. AKMODS_TAG is only the default for a local build. The
           # candidate's immutable digest is then pinned instead of racing the floating tag.
-          if [[ "${AKMODS_TAG}" == *@* ]]; then
-            echo "::error::AKMODS_TAG must be a bare tag, not a digest."
-            exit 1
-          fi
-
           echo "Base ref             : ${BASE_REF}"
           echo "Akmods flavor        : ${AKMODS_FLAVOR}"
 
@@ -262,51 +258,64 @@ jobs:
             echo "::error::Could not derive the akmods tag from ${BASE_REF}."
             exit 1
           fi
-          candidate_ref="${AKMODS_IMAGE}:${candidate_tag}"
-
           echo "Base image kernel    : ${base_kver}"
-          echo "Akmods candidate ref : ${candidate_ref}"
 
-          if ! akmods_digest="$(
-            skopeo --command-timeout 5m inspect --retry-times 5 \
-              "docker://${candidate_ref}" 2>/dev/null | jq -er '.Digest'
-          )"; then
-            echo "::error::No retained akmods image was found for base kernel" \
-              "${base_kver}: ${candidate_ref}."
-            echo "::error::Refusing to fall back to a floating akmods tag, which" \
-              "could contain modules for another kernel. Re-run after uBlue" \
-              "publishes this candidate, or update the base image."
-            exit 1
-          fi
+          # pin_akmods IMAGE_ARG TAG_ARG: resolve the retained candidate in the image
+          # named by IMAGE_ARG, check its kernel, and pin TAG_ARG to its digest.
+          pin_akmods() {
+            local image_arg="$1" tag_arg="$2" image tag candidate_ref digest kver resolved
+            image="$(grep -oP "^ARG ${image_arg}=\"\\K[^\"]+" Containerfile)"
+            tag="$(grep -oP "^ARG ${tag_arg}=\"\\K[^\"]+" Containerfile)"
+            if [[ "${tag}" == *@* ]]; then
+              echo "::error::${tag_arg} must be a bare tag, not a digest."
+              exit 1
+            fi
+            candidate_ref="${image}:${candidate_tag}"
+            echo "Akmods candidate ref : ${candidate_ref}"
 
-          if ! akmods_kver="$(
-            skopeo --command-timeout 5m inspect --retry-times 5 --config \
-              "docker://${AKMODS_IMAGE}@${akmods_digest}" 2>/dev/null \
-              | python3 .github/scripts/read-ostree-linux-label.py
-          )"; then
-            echo "::error::Could not read ostree.linux from ${candidate_ref};" \
-              "refusing to verify kernel/akmods compatibility."
-            exit 1
-          fi
+            if ! digest="$(
+              skopeo --command-timeout 5m inspect --retry-times 5 \
+                "docker://${candidate_ref}" 2>/dev/null | jq -er '.Digest'
+            )"; then
+              echo "::error::No retained akmods image was found for base kernel" \
+                "${base_kver}: ${candidate_ref}."
+              echo "::error::Refusing to fall back to a floating akmods tag, which" \
+                "could contain modules for another kernel. Re-run after uBlue" \
+                "publishes this candidate, or update the base image."
+              exit 1
+            fi
 
-          echo "Akmods candidate kernel: ${akmods_kver:-<ostree.linux label not found>}"
-          echo "Akmods resolved digest : ${akmods_digest}"
+            if ! kver="$(
+              skopeo --command-timeout 5m inspect --retry-times 5 --config \
+                "docker://${image}@${digest}" 2>/dev/null \
+                | python3 .github/scripts/read-ostree-linux-label.py
+            )"; then
+              echo "::error::Could not read ostree.linux from ${candidate_ref};" \
+                "refusing to verify kernel/akmods compatibility."
+              exit 1
+            fi
 
-          if [[ "${base_kver}" != "${akmods_kver}" ]]; then
-            echo "::error::Kernel mismatch. Base ${BASE_REF} ships ${base_kver}," \
-              "but ${candidate_ref} reports ${akmods_kver}."
-            exit 1
-          fi
+            echo "Akmods candidate kernel: ${kver:-<ostree.linux label not found>}"
+            echo "Akmods resolved digest : ${digest}"
 
-          echo "Kernel versions match (${base_kver}). Pinning AKMODS_TAG to the" \
-            "resolved candidate digest for this run."
+            if [[ "${base_kver}" != "${kver}" ]]; then
+              echo "::error::Kernel mismatch. Base ${BASE_REF} ships ${base_kver}," \
+                "but ${candidate_ref} reports ${kver}."
+              exit 1
+            fi
 
-          RESOLVED_TAG="${candidate_tag}@${akmods_digest}"
-          sed -i "s|^ARG AKMODS_TAG=\"[^\"]*\"|ARG AKMODS_TAG=\"${RESOLVED_TAG}\"|" \
-            Containerfile
-          grep -oP '^ARG AKMODS_TAG="\K[^"]+' Containerfile
+            echo "Kernel versions match (${base_kver}). Pinning ${tag_arg} to the" \
+              "resolved candidate digest for this run."
 
-          echo "resolved_tag=${RESOLVED_TAG}" >>"$GITHUB_OUTPUT"
+            resolved="${candidate_tag}@${digest}"
+            sed -i "s|^ARG ${tag_arg}=\"[^\"]*\"|ARG ${tag_arg}=\"${resolved}\"|" \
+              Containerfile
+            grep -oP "^ARG ${tag_arg}=\"\\K[^\"]+" Containerfile
+          }
+
+          pin_akmods AKMODS_IMAGE AKMODS_TAG
+          pin_akmods AKMODS_NVIDIA_IMAGE AKMODS_NVIDIA_TAG
+
           echo "base_kver=${base_kver}" >>"$GITHUB_OUTPUT"
 
       # build_files/30-kmods.sh installs kmod-yeetmouse for the exact base kernel from
@@ -426,6 +435,7 @@ jobs:
           # kernel modules that then load into the running kernel. Verified that ublue
           # signs it with the same key as the base.
           verify_arg AKMODS_IMAGE AKMODS_TAG
+          verify_arg AKMODS_NVIDIA_IMAGE AKMODS_NVIDIA_TAG
 
       - name: Build image
         id: build

@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 # Out-of-tree kernel modules. These must match the base kernel EXACTLY.
 #
-# The kernel is never replaced: kinoite-nvidia ships Fedora's kernel rebuilt and
+# The kernel is never replaced: kinoite-main ships Fedora's kernel rebuilt and
 # signed with the ublue MOK, which is what lets prebuilt signed kmods load under
 # Secure Boot. A kernel swap here would break that chain.
 source "${CTX}/build_files/lib/common.sh"
@@ -25,7 +25,7 @@ log "Installing kmods for kernel ${KVER}"
 # 7.2.4-200.fc44), in which case the kmod filename simply will not match KVER. Both
 # cases must stop the build rather than silently ship without the virtual camera.
 #
-# CONSEQUENCE: akmods has no schedule tying it to kinoite-nvidia's own kernel bumps,
+# CONSEQUENCE: akmods has no schedule tying it to kinoite-main's own kernel bumps,
 # so a Renovate digest bump on akmods can land ahead of the base image picking up the
 # matching kernel. If a build fails here right after an akmods digest bump, that is
 # almost certainly why. Re-dispatch once the base image's next rebuild lands the same

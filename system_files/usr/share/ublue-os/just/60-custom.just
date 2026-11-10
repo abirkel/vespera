@@ -11,7 +11,7 @@
 # helpers come from /usr/lib/ujust/ujust.sh ($bold/$b, $normal/$n, $dim, $green,
 # $yellow, $red, plus Choose / Confirm / Urllink).
 
-# Show the state of everything this image adds on top of kinoite-nvidia
+# Show the state of everything this image adds on top of kinoite-main
 image-status:
     #!/usr/bin/bash
     source /usr/lib/ujust/ujust.sh

@@ -8,7 +8,7 @@ log "Installing Fedora packages"
 # ---------------------------------------------------------------------------
 # ALREADY IN THE BASE — asserted, not reinstalled. Re-requesting is a dnf no-op, but
 # it makes this file misrepresent what the image adds and hides the day the base drops
-# one. Verified against kinoite-nvidia:44.
+# one. Verified against kinoite-nvidia:44, which is kinoite-main plus nvidia.sh's layer.
 #
 #   7zip       owns /usr/bin/7z and Provides p7zip-plugins, which is what ark needs.
 #              `p7zip` and `p7zip-plugins` no longer exist in Fedora 44 — requesting

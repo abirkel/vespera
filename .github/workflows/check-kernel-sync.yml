@@ -18,7 +18,7 @@ on:
 # regardless of what this job reports, since akmods can (and does) publish a new,
 # matching build in the time between this check and the next real build.
 #
-# HOW: both ghcr.io/ublue-os/kinoite-nvidia and ghcr.io/ublue-os/akmods stamp an
+# HOW: ghcr.io/ublue-os/kinoite-main, akmods and akmods-nvidia-open all stamp an
 # `ostree.linux` config label with the exact kernel-core version they ship or were built
 # against. Reading that label via `skopeo inspect --config` needs no image pull.
 #
@@ -44,9 +44,11 @@ jobs:
         run: |
           base_tag="$(grep -oP '^ARG BASE_TAG="\K[^"]+' Containerfile)"
           akmods_tag="$(grep -oP '^ARG AKMODS_TAG="\K[^"]+' Containerfile)"
+          akmods_nvidia_tag="$(grep -oP '^ARG AKMODS_NVIDIA_TAG="\K[^"]+' Containerfile)"
           akmods_flavor="$(grep -oP '^ARG AKMODS_FLAVOR="\K[^"]+' Containerfile)"
           base_image="$(grep -oP '^ARG BASE_IMAGE="\K[^"]+' Containerfile)"
           akmods_image="$(grep -oP '^ARG AKMODS_IMAGE="\K[^"]+' Containerfile)"
+          akmods_nvidia_image="$(grep -oP '^ARG AKMODS_NVIDIA_IMAGE="\K[^"]+' Containerfile)"
 
           # BASE_TAG is pinned as tag@sha256:digest. skopeo will not take a ref with
           # both a tag and a digest, so use the digest alone, it is the authoritative
@@ -57,14 +59,18 @@ jobs:
           # flavor and the base's own labels. AKMODS_TAG is only a local-build default.
           echo "base_ref=${base_image}@${base_digest}" >> "${GITHUB_OUTPUT}"
           echo "akmods_image=${akmods_image}" >> "${GITHUB_OUTPUT}"
+          echo "akmods_nvidia_image=${akmods_nvidia_image}" >> "${GITHUB_OUTPUT}"
           echo "akmods_tag=${akmods_tag}" >> "${GITHUB_OUTPUT}"
+          echo "akmods_nvidia_tag=${akmods_nvidia_tag}" >> "${GITHUB_OUTPUT}"
           echo "akmods_flavor=${akmods_flavor}" >> "${GITHUB_OUTPUT}"
 
       - name: Compare kernel versions
         env:
           BASE_REF: ${{ steps.tags.outputs.base_ref }}
           AKMODS_IMAGE: ${{ steps.tags.outputs.akmods_image }}
+          AKMODS_NVIDIA_IMAGE: ${{ steps.tags.outputs.akmods_nvidia_image }}
           AKMODS_TAG: ${{ steps.tags.outputs.akmods_tag }}
+          AKMODS_NVIDIA_TAG: ${{ steps.tags.outputs.akmods_nvidia_tag }}
           AKMODS_FLAVOR: ${{ steps.tags.outputs.akmods_flavor }}
         run: |
           set -euo pipefail
@@ -80,9 +86,9 @@ jobs:
             exit 0
           fi
 
-          if [[ "${AKMODS_TAG}" == *@* ]]; then
-            echo "::warning::AKMODS_TAG must be a bare flavor/Fedora tag. The full" \
-              "build will reject this configuration."
+          if [[ "${AKMODS_TAG}" == *@* || "${AKMODS_NVIDIA_TAG}" == *@* ]]; then
+            echo "::warning::AKMODS_TAG and AKMODS_NVIDIA_TAG must be bare flavor/Fedora" \
+              "tags. The full build will reject this configuration."
             exit 0
           fi
 
@@ -94,28 +100,31 @@ jobs:
               "The full build will fail closed."
             exit 0
           fi
-          candidate_ref="${AKMODS_IMAGE}:${candidate_tag}"
-
           echo "Base image kernel                    : ${base_kver}"
-          echo "Akmods candidate ref                 : ${candidate_ref}"
 
-          if ! akmods_kver="$(
-            skopeo inspect --config "docker://${candidate_ref}" 2>/dev/null \
-              | python3 .github/scripts/read-ostree-linux-label.py
-          )"; then
-            echo "::warning::No readable kernel-specific akmods image exists for" \
-              "${base_kver}. The full build will fail closed until uBlue publishes" \
-              "${candidate_ref}."
-            exit 0
-          fi
+          # akmods and akmods-nvidia-open use the same retained-tag scheme.
+          for image in "${AKMODS_IMAGE}" "${AKMODS_NVIDIA_IMAGE}"; do
+            candidate_ref="${image}:${candidate_tag}"
+            echo "Akmods candidate ref                 : ${candidate_ref}"
 
-          echo "Akmods candidate kernel              : ${akmods_kver}"
+            if ! akmods_kver="$(
+              skopeo inspect --config "docker://${candidate_ref}" 2>/dev/null \
+                | python3 .github/scripts/read-ostree-linux-label.py
+            )"; then
+              echo "::warning::No readable kernel-specific akmods image exists for" \
+                "${base_kver}. The full build will fail closed until uBlue publishes" \
+                "${candidate_ref}."
+              continue
+            fi
 
-          if [[ "${base_kver}" != "${akmods_kver}" ]]; then
-            echo "::warning::Kernel mismatch. Base ${BASE_REF} ships ${base_kver}," \
-              "but ${candidate_ref} reports ${akmods_kver}. The full build will" \
-              "fail closed."
-            exit 0
-          fi
+            echo "Akmods candidate kernel              : ${akmods_kver}"
 
-          echo "Kernel-specific akmods candidate matches (${base_kver})."
+            if [[ "${base_kver}" != "${akmods_kver}" ]]; then
+              echo "::warning::Kernel mismatch. Base ${BASE_REF} ships ${base_kver}," \
+                "but ${candidate_ref} reports ${akmods_kver}. The full build will" \
+                "fail closed."
+              continue
+            fi
+
+            echo "Kernel-specific akmods candidate matches (${base_kver})."
+          done
