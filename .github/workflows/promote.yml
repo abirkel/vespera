@@ -201,6 +201,19 @@ jobs:
           echo "digest=${DIGEST}" >>"$GITHUB_OUTPUT"
           echo "::notice title=Pinned::${IMAGE_REGISTRY}/${IMAGE_NAME}@${DIGEST}"
 
+          # :latest is pinned too, so the gate compares two fixed images. Unlike
+          # :testing it is NOT fatal when unreadable: the gate already reports that as
+          # "unresolved", and a forced promotion is allowed to proceed past it.
+          LATEST_DIGEST=""
+          if ! LATEST_DIGEST="$(skopeo --command-timeout 5m inspect --retry-times 5 \
+                "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${TARGET_TAG}" \
+                | jq -er '.Digest')" \
+              || [[ ! "${LATEST_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::warning::Could not pin :${TARGET_TAG}; the gate will report it unresolved."
+            LATEST_DIGEST=""
+          fi
+          echo "latest_digest=${LATEST_DIGEST}" >>"$GITHUB_OUTPUT"
+
       # The content gate. Compares the package manifest already attached to :testing
       # against the one attached to :latest — the same OCI referrer build.yml's
       # "Attach package manifest" step writes on every publish, so this needs no new
@@ -217,12 +230,16 @@ jobs:
         timeout-minutes: 20
         env:
           PINNED: ${{ steps.pin.outputs.digest }}
+          PINNED_LATEST: ${{ steps.pin.outputs.latest_digest }}
         run: |
           set -euo pipefail
           TESTING_MANIFEST="$(.github/scripts/fetch-manifest.sh \
             "${IMAGE_REGISTRY}/${IMAGE_NAME}" "${PINNED}")"
-          LATEST_MANIFEST="$(.github/scripts/fetch-manifest.sh \
-            "${IMAGE_REGISTRY}/${IMAGE_NAME}" "${TARGET_TAG}")"
+          LATEST_MANIFEST=""
+          if [[ -n "${PINNED_LATEST}" ]]; then
+            LATEST_MANIFEST="$(.github/scripts/fetch-manifest.sh \
+              "${IMAGE_REGISTRY}/${IMAGE_NAME}" "${PINNED_LATEST}")"
+          fi
 
           if [[ -z "${TESTING_MANIFEST}" ]]; then
             echo "unresolved=true" >>"$GITHUB_OUTPUT"
@@ -263,7 +280,7 @@ jobs:
               | jq -r '.Labels["dev.vespera.pkg-fingerprint"] // empty'
           )"
           LATEST_FP="$(skopeo --command-timeout 5m inspect --retry-times 5 \
-            "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${TARGET_TAG}" \
+            "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}@${PINNED_LATEST}" \
             | jq -r '.Labels["dev.vespera.pkg-fingerprint"] // empty')"
           if [[ -n "${TESTING_FP}" && "${TESTING_FP}" == "${LATEST_FP}" ]]; then
             echo "noop=true" >>"$GITHUB_OUTPUT"
