@@ -1,7 +1,8 @@
-# vespera — a custom KDE gaming + light-dev image on ublue's kinoite-nvidia.
+# vespera — a custom KDE gaming + light-dev image on ublue's kinoite-main.
 #
-# Base is Fedora Kinoite + nvidia-open + a Secure-Boot-signed matching kernel + the
-# full 32-bit driver stack + negativo17 codecs. Discover survives here (unlike
+# Base is Fedora Kinoite + a Secure-Boot-signed matching kernel + negativo17 codecs.
+# build_files/nvidia.sh adds nvidia-open and the full 32-bit driver stack, the same
+# way ublue's retired kinoite-nvidia did. Discover survives here (unlike
 # Bazzite/Aurora), though its rpm-ostree backend must be added back — see
 # 10-packages-fedora.sh.
 #
@@ -28,14 +29,16 @@
 # pinDigests BASE_TAG becomes "latest@sha256:…". Keep these one per line and do not
 # share one ARG between two FROMs.
 #
-ARG BASE_IMAGE="ghcr.io/ublue-os/kinoite-nvidia"
-ARG BASE_TAG="latest@sha256:64e88b062afef86b16f3b4a42a99ae6b4089170e93118a96fa7797b4d3a71df0"
+ARG BASE_IMAGE="ghcr.io/ublue-os/kinoite-main"
+ARG BASE_TAG="latest@sha256:442caae39e414750223bd6aadaadaebae5e55dec911569b2ac24e14a344a040e"
 
 # akmods ships prebuilt, MOK-signed out-of-tree modules built against the *exact*
 # kernel in the base. A scratch image with no shell — the RPMs are bind-mounted below.
+# akmods-nvidia-open is the same for the NVIDIA driver, and also carries ublue's
+# nvidia-install.sh, which build_files/nvidia.sh runs.
 #
 # NOT PINNED BY RENOVATE. akmods republishes main-44 roughly daily, independently of
-# when kinoite-nvidia republishes its own `latest`. Pinning both by digest via two
+# when kinoite-main republishes its own `latest`. Pinning both by digest via two
 # separate Renovate rules meant the two pins agreed only by chance — see
 # .github/workflows/build.yml's "Resolve matching akmods digest" step. Every real
 # build derives the retained kernel-specific akmods tag from the base image's
@@ -47,10 +50,16 @@ ARG BASE_TAG="latest@sha256:64e88b062afef86b16f3b4a42a99ae6b4089170e93118a96fa77
 # crosses to a new Fedora release needs no edit (see
 # .github/scripts/resolve_akmods_candidate.py). AKMODS_TAG is only the default for a
 # direct local build and must be overridden when the base is on a different release.
+# The same applies to AKMODS_NVIDIA_TAG, which uses the same AKMODS_FLAVOR.
+#
+# Every ARG used in a FROM line must be declared before the first FROM.
 ARG AKMODS_IMAGE="ghcr.io/ublue-os/akmods"
 ARG AKMODS_FLAVOR="main"
 ARG AKMODS_TAG="main-44"
+ARG AKMODS_NVIDIA_IMAGE="ghcr.io/ublue-os/akmods-nvidia-open"
+ARG AKMODS_NVIDIA_TAG="main-44"
 FROM ${AKMODS_IMAGE}:${AKMODS_TAG} AS akmods
+FROM ${AKMODS_NVIDIA_IMAGE}:${AKMODS_NVIDIA_TAG} AS akmods_nvidia
 
 FROM scratch AS ctx
 COPY build_files /build_files
@@ -72,12 +81,15 @@ ARG IMAGE_TAG="testing"
 ARG ENABLE_MSFONTS="1"
 ARG ENABLE_YEETMOUSE="1"
 
+# nvidia.sh runs first, before 00-dnf-policy.sh, so the NVIDIA set resolves as it did
+# in kinoite-nvidia. 99-cleanup.sh's cleanup and commit cover both.
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=bind,from=akmods,source=/rpms,target=/tmp/akmods-rpms \
+    --mount=type=bind,from=akmods_nvidia,source=/rpms,target=/tmp/akmods-nv-rpms \
     --mount=type=cache,target=/var/cache/libdnf5,sharing=locked \
     --mount=type=tmpfs,target=/tmp \
     --mount=type=tmpfs,target=/var/log \
-    /ctx/build_files/build.sh
+    /ctx/build_files/nvidia.sh && /ctx/build_files/build.sh
 
 # Lint last and offline, so nothing can reach the network at this point.
 RUN --network=none --mount=type=tmpfs,target=/tmp bootc container lint

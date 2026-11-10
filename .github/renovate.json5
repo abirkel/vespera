@@ -31,7 +31,7 @@
 
   packageRules: [
     // ------------------------------------------------------------------
-    // Base image: ghcr.io/ublue-os/kinoite-nvidia, tracked via its rolling
+    // Base image: ghcr.io/ublue-os/kinoite-main, tracked via its rolling
     // `latest` tag. Digest bumps therefore include the day ublue promotes
     // `latest` from Fedora N to N+1 — which is exactly how this repo follows
     // Fedora with no manual edit.
@@ -43,10 +43,10 @@
     // requiring the full build to pass is the entire safety mechanism.
     // ------------------------------------------------------------------
     {
-      matchPackageNames: ["ghcr.io/ublue-os/kinoite-nvidia"],
+      matchPackageNames: ["ghcr.io/ublue-os/kinoite-main"],
       matchUpdateTypes: ["digest", "pinDigest"],
       groupName: "base image",
-      commitMessageTopic: "kinoite-nvidia base",
+      commitMessageTopic: "kinoite-main base",
       automerge: true,
       automergeType: "pr",
       platformAutomerge: true,
@@ -78,7 +78,7 @@
     // digest actually matches the base pinned above right now.
     //
     // Why: akmods republishes main-44 roughly daily, independently of when
-    // kinoite-nvidia republishes its own `latest`. Pinning both by digest via two
+    // kinoite-main republishes its own `latest`. Pinning both by digest via two
     // separate Renovate rules (the old design) meant the two pins agreed only by
     // chance — Renovate opened one PR per side, each bumping only its own ARG, so
     // neither PR alone could ever land a matched pair even when one briefly
@@ -98,9 +98,12 @@
     // The Fedora release is not edited by hand either: the build derives it from the
     // base image's labels (.github/scripts/resolve_akmods_candidate.py), so the
     // main-44 -> main-45 move happens by itself when the base crosses to F45.
+    //
+    // akmods-nvidia-open (AKMODS_NVIDIA_TAG) is resolved the same way and needs
+    // the same rule for the same reason.
     // ------------------------------------------------------------------
     {
-      matchPackageNames: ["ghcr.io/ublue-os/akmods"],
+      matchPackageNames: ["ghcr.io/ublue-os/akmods", "ghcr.io/ublue-os/akmods-nvidia-open"],
       enabled: false,
     },
 

@@ -2,7 +2,7 @@
 
 A custom [bootc](https://bootc-dev.github.io/bootc/) image: Fedora Kinoite with
 NVIDIA, gaming and light development tooling, built on
-`ghcr.io/ublue-os/kinoite-nvidia`.
+`ghcr.io/ublue-os/kinoite-main` plus ublue's NVIDIA driver layer.
 
 
 ```
@@ -14,7 +14,9 @@ ghcr.io/abirkel/vespera:latest
 
 | Candidate | Verdict |
 | --- | --- |
-| `ublue-os/kinoite-nvidia` | **Chosen.** Kinoite + `nvidia-open` + a Secure-Boot-signed matching kernel + the full 32-bit driver stack + negativo17 codecs. |
+| `ublue-os/kinoite-main` + `akmods-nvidia-open` | **Chosen.** Kinoite + a Secure-Boot-signed matching kernel + negativo17 codecs. `build_files/nvidia.sh` adds `nvidia-open` and the full 32-bit driver stack with ublue's own installer, the same way the retired `kinoite-nvidia` did. |
+| `ublue-os/kinoite-nvidia` | Was the base until ublue stopped building it on 2026-11-07 (ublue-os/main#3075). |
+| `blue-build/base-images` NVIDIA | Signs the kernel with its own key (new MOK), auto-applies updates, drops the negativo17 repo and ublue's signing policy. |
 | `bazzite` / `bazzite-nvidia-open` | Replaces Discover with Bazaar, masks the appstream cache refresh, overrides branding, defaults and the update stack. Undoing all that is more work than adding to Kinoite. |
 | `aurora-dx` | GNOME-adjacent developer focus; the DX layer is mostly unwanted here. |
 | `fedora/fedora-kinoite` | Means owning the NVIDIA kmod signing chain. |
@@ -26,10 +28,11 @@ kernel** — that breaks the signing chain and every kmod with it.
 ## Repository layout
 
 ```
-Containerfile                  base ARGs, akmods mount, one RUN, then bootc lint
+Containerfile                  base ARGs, akmods mounts, one RUN, then bootc lint
 Justfile                       just check, build, rechunk, disk, gen-keys
 cosign.pub                     public signing key, baked into the image
 build_files/
+  nvidia.sh                    NVIDIA driver + initramfs (runs before build.sh)
   build.sh                     runs [0-9][0-9]-*.sh in glob order
   lib/common.sh                log/warn/die, retry, fetch, copr_install, repo_install
   00-dnf-policy.sh             install_weak_deps=False  (must be first)
@@ -68,7 +71,7 @@ just check          # syntax, shellcheck, yaml, toml, layout — what CI runs fi
 just build          # full local build (~40 GB free)
 just build-fast     # skips MS fonts and the yeetmouse kmod
 just rechunk        # split into per-package layers (see Update download size)
-just diff-base      # package diff against kinoite-nvidia
+just diff-base      # package diff against kinoite-main
 ```
 
 ### 3. Install

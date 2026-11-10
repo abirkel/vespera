@@ -133,7 +133,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # /etc hygiene (Bazzite's finalize, adapted). Image-provided accounts belong in
-# /usr/lib/{passwd,group}; /etc is machine-local state, and kinoite-nvidia leaves build
+# /usr/lib/{passwd,group}; /etc is machine-local state, and kinoite-main leaves build
 # residue there. Fails the build rather than shipping an image with a lost account.
 # ---------------------------------------------------------------------------
 log "Relocating image accounts out of /etc"
