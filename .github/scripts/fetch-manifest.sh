@@ -13,6 +13,10 @@
 # testing against latest (for the fast-path headline check dispatched
 # BEFORE promote.yml even runs). One implementation, called from both
 # workflows, rather than two copies drifting apart.
+#
+# The second argument may also be a digest (sha256:<64 hex>) instead of a tag. A digest
+# is used as given, with no tag lookup, so a caller that pinned an image earlier reads
+# the manifest of exactly that image even if the tag has since moved.
 set -euo pipefail
 
 IMAGE_REF="$1"
@@ -20,13 +24,21 @@ TAG="$2"
 ARTIFACT_TYPE="${3:-application/vnd.vespera.packages.v1+json}"
 
 digest=""
-for attempt in 1 2 3 4; do
-  digest="$(skopeo inspect "docker://${IMAGE_REF}:${TAG}" 2>/dev/null \
-    | jq -r '.Digest // empty')"
-  [[ -n "${digest}" ]] && break
-  echo "::notice::${TAG}: digest not found yet (attempt ${attempt}/4), retrying in 10s" >&2
-  sleep 10
-done
+if [[ "${TAG}" == sha256:* ]]; then
+  if [[ ! "${TAG}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "::error::not a valid sha256 digest: ${TAG}" >&2
+    exit 1
+  fi
+  digest="${TAG}"
+else
+  for attempt in 1 2 3 4; do
+    digest="$(skopeo inspect "docker://${IMAGE_REF}:${TAG}" 2>/dev/null \
+      | jq -r '.Digest // empty')"
+    [[ -n "${digest}" ]] && break
+    echo "::notice::${TAG}: digest not found yet (attempt ${attempt}/4), retrying in 10s" >&2
+    sleep 10
+  done
+fi
 [[ -n "${digest}" ]] || exit 0
 
 artifact_digest=""
