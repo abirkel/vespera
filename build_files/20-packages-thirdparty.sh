@@ -132,6 +132,35 @@ copr_install "fuddlesworth/PlasmaZones" plasmazones
 copr_install "deltacopy/plasma6-applets-kara" plasma6-applets-kara
 
 # ---------------------------------------------------------------------------
+# kcm-fcitx5: the fcitx5 page in System Settings, and fcitx5-plasma-theme-generator,
+# which is what puts "KDE Plasma" in fcitx5's theme list.
+#
+# Fedora 45's build requires libPlasma.so.7, but Plasma 6.8 provides libPlasma.so.8,
+# so it cannot be installed there (Fedora bug 2563996). Fedora 44 and 46 got a rebuild
+# and 45 did not. The Fedora KDE SIG's staging COPR has the rebuilt package.
+#
+# Fedora first, so this uses Fedora's package again by itself once it is rebuilt. The
+# COPR is the fallback. Only kcm-fcitx5 is visible from it: it also carries the whole
+# Plasma 6.8 stack, and none of that may replace Fedora's. If neither source works the
+# build fails, since the page and the theme are part of the Japanese input setup.
+# Remove the COPR branch once Fedora's F45 build is fixed.
+# ---------------------------------------------------------------------------
+log "kcm-fcitx5"
+if dnf5 -y install kcm-fcitx5; then
+    info "kcm-fcitx5 installed from Fedora"
+else
+    kcm_copr="@kdesig/kde-final"
+    kcm_repo="copr:copr.fedorainfracloud.org:group_kdesig:kde-final"
+    warn "kcm-fcitx5 cannot be installed from Fedora; using ${kcm_copr}"
+    dnf5 -y copr enable "${kcm_copr}"
+    dnf5 -y copr disable "${kcm_copr}"
+    dnf5 -y install --enablerepo="${kcm_repo}" \
+        --setopt="${kcm_repo}.includepkgs=kcm-fcitx5" kcm-fcitx5 \
+        || die "kcm-fcitx5 cannot be installed from Fedora or ${kcm_copr}"
+    info "kcm-fcitx5 installed from ${kcm_copr}"
+fi
+
+# ---------------------------------------------------------------------------
 # Valve's Vapor look-and-feel, without the branding hijack.
 #
 # steamdeck-kde-presets-desktop ships the Vapor/VGUI colour schemes, desktop theme,

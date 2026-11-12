@@ -104,8 +104,8 @@ KDE=(
 # never gets the privileged Wayland input-method socket KWin hands to the
 # process it spawns itself (confirmed against kwin's own source,
 # src/inputmethod.cpp's startInputMethod()). fcitx5-gtk/-qt are the toolkit
-# IM-module shims, fcitx5-configtool/kcm-fcitx5 are the GUI, fcitx5-mozc is
-# the Japanese engine.
+# IM-module shims, fcitx5-configtool is the GUI, fcitx5-mozc is the Japanese engine.
+# kcm-fcitx5, the System Settings page, is installed in 20-packages-thirdparty.sh.
 #
 # Reference: https://fcitx-im.org/wiki/Using_Fcitx_5_on_Wayland#KDE_Plasma
 # ---------------------------------------------------------------------------
@@ -114,7 +114,6 @@ IME=(
     fcitx5-gtk
     fcitx5-qt
     fcitx5-configtool
-    kcm-fcitx5
     fcitx5-mozc
 )
 
